@@ -179,7 +179,7 @@ const SUBCLASS_ID: usize = 0x4650_5348;
 /// The frontend owns the decision (`syncWindowShape` in window-prefs.svelte.ts)
 /// and the minimum size that goes with it; this only tells the platform.
 #[tauri::command]
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_variables))]
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 pub fn window_shape_lock(window: tauri::WebviewWindow, width: u32, height: u32) {
     let shape = (width > 0 && height > 0).then_some((f64::from(width), f64::from(height)));
     #[cfg(target_os = "macos")]
@@ -800,7 +800,7 @@ const GLIDE_STEP: std::time::Duration = std::time::Duration::from_millis(8);
 /// `false` too, which sent the frontend's fallback after the window a pinch had
 /// just taken hold of.
 #[tauri::command]
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_variables))]
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 pub async fn window_frame_glide(
     window: tauri::WebviewWindow,
     x: f64,

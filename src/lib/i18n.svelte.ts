@@ -690,6 +690,14 @@ const ru = {
   'set.licenses_foot':
     'Плеер работает на mpv, FFmpeg и других свободных библиотеках — они распространяются по LGPL и другим лицензиям, их полные тексты входят в поставку:',
   'set.licenses_open': 'открыть лицензии',
+  'set.update_label': 'Velora {version}',
+  'set.update_hint_idle': 'Velora проверяет обновления сама при запуске. Нажмите, чтобы проверить сейчас.',
+  'set.update_hint_latest': 'Установлена последняя версия.',
+  'set.update_hint_failed': 'Не удалось связаться с GitHub. Проверьте подключение и попробуйте ещё раз.',
+  'set.update_hint_available': 'Доступна версия {version}.',
+  'set.update_check': 'Проверить обновления',
+  'set.update_checking': 'Проверяем…',
+  'set.update_install': 'Установить {version}',
   'lic.title': 'Лицензии',
   'lic.intro':
     'Velora распространяется по GPL-3.0-or-later — её текст в самом низу. Библиотеки, на которых он работает, идут под своими лицензиями: mpv, FFmpeg, libplacebo и другие под LGPL, остальные каждая под своей. Ниже полный перечень и все тексты, ровно те, что входят в поставку.',
@@ -1567,6 +1575,14 @@ const en: Record<MessageKey, string> = {
   'set.licenses_foot':
     'Velora runs on mpv, FFmpeg and other free software libraries — covered by the LGPL and other licenses, whose full texts ship with the application:',
   'set.licenses_open': 'open the licenses',
+  'set.update_label': 'Velora {version}',
+  'set.update_hint_idle': 'Velora checks for updates by itself when it starts. Check now to see whether a newer version is out.',
+  'set.update_hint_latest': 'You have the latest version.',
+  'set.update_hint_failed': 'Could not reach GitHub. Check the connection and try again.',
+  'set.update_hint_available': 'Version {version} is available.',
+  'set.update_check': 'Check for updates',
+  'set.update_checking': 'Checking…',
+  'set.update_install': 'Install {version}',
   'lic.title': 'Licenses',
   'lic.intro':
     'Velora itself is GPL-3.0-or-later — its text is at the very bottom. The libraries it runs on keep their own licenses: mpv, FFmpeg, libplacebo and others under the LGPL, the rest each under its own. Below is the full inventory and every license text, exactly as they ship with the application.',

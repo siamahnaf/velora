@@ -245,7 +245,7 @@
        ran into the window edge. -->
   <div class="start-inner">
   <div class="panel">
-    <h1>Velora</h1>
+    <h1><img class="start-logo" src="/logo.png" alt="Velora" draggable="false" /></h1>
     <p>{t('start.hint')}</p>
     <div class="start-actions">
       <button class="primary" onclick={onOpenFile}>{withKey(t('start.open'), 'open_file')}</button>
@@ -1246,9 +1246,15 @@
     outline-offset: 1px;
   }
   .panel h1 {
-    font-size: 42px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    margin: 0 0 8px;
+    margin: 0 0 14px;
+    line-height: 0;
+  }
+
+  /* The logo is the heading: the mark at a size that reads across the room,
+     with the name as its alt text. */
+  .start-logo {
+    width: 96px;
+    height: 96px;
+    user-select: none;
   }
 </style>

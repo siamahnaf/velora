@@ -13,11 +13,13 @@
   /// used to be polled every three seconds for the whole life of the app; it is
   /// only ever shown here, so the timer now runs only while the dialog is open.
   import { invoke } from '@tauri-apps/api/core';
+  import { getVersion } from '@tauri-apps/api/app';
   import { tick } from 'svelte';
   import { revealItemInDir } from '@tauri-apps/plugin-opener';
   import { portable, setHandler } from '$lib/portable.svelte';
   import { command, getProperty } from 'tauri-plugin-libmpv-api';
   import { SUB_SCALE } from '$lib/sub-scale.svelte';
+  import { type CheckResult, checkNow, installUpdate, updater } from '$lib/updater.svelte';
 
   import { refreshAudioOutput } from '$lib/audio-output.svelte';
   import Dialog from '$lib/components/Dialog.svelte';
@@ -516,6 +518,26 @@
   const tabEls: Partial<Record<SettingsTab, HTMLButtonElement>> = {};
   $effect(() => {
     tabEls[settingsTab]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
+
+
+  // ---- Updates ----
+  let appVersion = $state('');
+  let updateCheck = $state<'idle' | 'checking' | CheckResult>('idle');
+  void getVersion()
+    .then((v) => (appVersion = v))
+    .catch(() => {});
+
+  async function checkUpdatesHere() {
+    updateCheck = 'checking';
+    updateCheck = await checkNow();
+  }
+
+  const updateHint = $derived.by(() => {
+    if (updater.available) return t('set.update_hint_available', { version: updater.available.version });
+    if (updateCheck === 'latest') return t('set.update_hint_latest');
+    if (updateCheck === 'failed') return t('set.update_hint_failed');
+    return t('set.update_hint_idle');
   });
 
   // ---- Torrents ----
@@ -1377,6 +1399,21 @@
            regardless. Revealing the file is still offered, inside that dialog. -->
     <div class="set-group">{t('sec.about')}</div>
     <div class="set-panel">
+      <!-- The timer checks at launch and every six hours; this is the same
+           check on demand, and it says what it found. -->
+      <div class="setting">
+        <div class="setting-label">{t('set.update_label', { version: appVersion })}</div>
+        <div class="setting-hint">{updateHint}</div>
+        {#if updater.available}
+          <button class="primary" onclick={() => { onclose(); void installUpdate(); }}>
+            {t('set.update_install', { version: updater.available.version })}
+          </button>
+        {:else}
+          <button class="btn-outline" disabled={updateCheck === 'checking'} onclick={() => void checkUpdatesHere()}>
+            {t(updateCheck === 'checking' ? 'set.update_checking' : 'set.update_check')}
+          </button>
+        {/if}
+      </div>
       {#if webviewVersion}
         <div class="settings-foot">
           {t(IS_MAC ? 'set.webview_foot_mac' : 'set.webview_foot_win', { version: webviewVersion })}

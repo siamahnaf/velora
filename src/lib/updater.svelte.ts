@@ -85,7 +85,7 @@ export const updater = new Updater();
 let pluginUpdate: Update | null = null;
 
 /// The manifest is `latest.json` on the newest GitHub release (`plugins.updater`
-/// in tauri.conf.json), published by .github/workflows/release.yml.
+/// in tauri.conf.json), built by scripts/release.ps1.
 const UPDATES_ENABLED = true;
 
 /// Ask the update server whether there is a newer signed build.
@@ -100,6 +100,20 @@ export async function checkForUpdate() {
     console.warn('update check failed:', e);
     return null;
   });
+}
+
+export type CheckResult = 'available' | 'latest' | 'failed';
+
+/// The settings sheet's "Check for updates": the same check as the timer's,
+/// but answered out loud — including "could not ask", which the timer hides.
+export async function checkNow(): Promise<CheckResult> {
+  try {
+    updater.available = await invoke<Waiting | null>('update_check');
+    return updater.available ? 'available' : 'latest';
+  } catch (e) {
+    console.warn('update check failed:', e);
+    return 'failed';
+  }
 }
 
 export async function installUpdate() {
