@@ -1109,17 +1109,30 @@ mod imp {
             SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNE_UPDATEITEM, SHCNF_IDLIST, SHCNF_PATHW,
         };
         let Ok(exe) = std::env::current_exe() else { return };
-        let wide: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
-        // SAFETY: `wide` is a NUL-terminated path that outlives both calls; the
-        // second is the documented "everything changed" notification, which
-        // takes no item pointers.
-        unsafe {
-            SHChangeNotify(
-                SHCNE_UPDATEITEM as i32,
-                SHCNF_PATHW,
-                wide.as_ptr().cast(),
-                std::ptr::null(),
+        // The executable is what the taskbar keys its icon on; the Start menu
+        // keys on the shortcut the installer made, so that is named too.
+        let mut items = vec![exe];
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            items.push(
+                std::path::PathBuf::from(appdata)
+                    .join(r"Microsoft\Windows\Start Menu\Programs\Velora.lnk"),
             );
+        }
+        for item in items.iter().filter(|p| p.exists()) {
+            let wide: Vec<u16> = item.as_os_str().encode_wide().chain(Some(0)).collect();
+            // SAFETY: `wide` is a NUL-terminated path that outlives the call.
+            unsafe {
+                SHChangeNotify(
+                    SHCNE_UPDATEITEM as i32,
+                    SHCNF_PATHW,
+                    wide.as_ptr().cast(),
+                    std::ptr::null(),
+                );
+            }
+        }
+        // SAFETY: the documented "everything changed" notification, which takes
+        // no item pointers.
+        unsafe {
             SHChangeNotify(
                 SHCNE_ASSOCCHANGED as i32,
                 SHCNF_IDLIST,
