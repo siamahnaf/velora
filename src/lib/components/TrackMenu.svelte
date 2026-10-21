@@ -299,7 +299,7 @@
   .mix-count {
     text-transform: none;
     letter-spacing: 0;
-    color: #4cb4ff;
+    color: #9b82ff;
   }
 
   /* Two classes against `.menu-item`'s one, so its `display: block` cannot win
@@ -342,8 +342,8 @@
   }
 
   .mix-check.on {
-    background: #1e88ff;
-    border-color: #1e88ff;
+    background: #734eff;
+    border-color: #734eff;
   }
 
   .mix-check.on svg {
@@ -367,7 +367,7 @@
   }
 
   .mini-switch.on {
-    background: #1e88ff;
+    background: #734eff;
   }
 
   .mini-switch::after {

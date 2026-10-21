@@ -133,7 +133,7 @@
 
   .torrent-file-left {
     flex: none;
-    color: #4cb4ff;
+    color: #9b82ff;
     font-size: 11.5px;
     font-variant-numeric: tabular-nums;
   }

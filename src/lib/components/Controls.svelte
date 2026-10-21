@@ -322,7 +322,7 @@
       </button>
     {/if}
     {#if showCast}
-      <!-- Blue while connected: the accent means on/selected, and a live
+      <!-- Violet while connected: the accent means on/selected, and a live
            cast session is a boolean "on". Local files and torrents (whose
            data may be a complete file on this disk — resolveCastSource
            answers, and an incomplete one refuses with the reason); a plain
@@ -438,11 +438,11 @@
   }
 
   .controls button.active {
-    color: #4cb4ff;
+    color: #9b82ff;
   }
 
   .speed {
-    color: #4cb4ff;
+    color: #9b82ff;
     font-size: 12px;
     font-weight: 600;
     padding: 0 6px;
@@ -468,10 +468,10 @@
     height: 24px;
   }
 
-  /* Blue means on: a live cast session is a boolean "on", same rule as
+  /* The accent means on: a live cast session is a boolean "on", same rule as
      .switch.on and the focus rings. */
   .controls button.cast-on {
-    color: #4cb4ff;
+    color: #9b82ff;
   }
 
   .controls.mini .cluster.cl-left,

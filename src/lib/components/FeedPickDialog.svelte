@@ -102,6 +102,6 @@
   }
 
   .feed-item-known {
-    color: #4cb4ff;
+    color: #9b82ff;
   }
 </style>

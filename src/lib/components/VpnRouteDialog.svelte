@@ -63,7 +63,7 @@
     margin: 0;
     width: 14px;
     height: 14px;
-    accent-color: #1e88ff;
+    accent-color: #734eff;
     cursor: pointer;
   }
 </style>

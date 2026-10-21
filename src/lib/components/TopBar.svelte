@@ -341,7 +341,7 @@
      thing to look at". */
   .torchip.waiting {
     color: #e8e8ec;
-    border-color: rgba(76, 180, 255, 0.45);
+    border-color: rgba(155, 130, 255, 0.45);
   }
 
   .torchip-line {
@@ -362,7 +362,7 @@
   }
 
   .torchip.waiting .torchip-icon {
-    color: #4cb4ff;
+    color: #9b82ff;
     /* The arrow stops meaning "downloading" when nothing is arriving. */
     animation: torchip-pulse 1.4s ease-in-out infinite;
   }
@@ -476,7 +476,7 @@
   .updbtn {
     align-self: center;
     margin-right: 8px;
-    background: #1e88ff;
+    background: #734eff;
     color: #ffffff;
     border: none;
     border-radius: 999px;
@@ -489,7 +489,7 @@
   }
 
   .updbtn:hover:not(:disabled) {
-    background: #4cb4ff;
+    background: #9b82ff;
   }
 
   .updbtn:disabled {

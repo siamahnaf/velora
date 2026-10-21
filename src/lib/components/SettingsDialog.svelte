@@ -2090,10 +2090,10 @@
     transition: background 0.12s ease;
   }
 
-  /* Blue means one thing here as everywhere else — this is the selected one,
+  /* The accent means one thing here as everywhere else — this is the selected one,
      the language mpv reaches for first. */
   .lang-chip.first {
-    background: #1e88ff;
+    background: #734eff;
   }
 
   .lang-name {
@@ -2427,8 +2427,8 @@
   }
 
   .folder-add:hover:not(:disabled) {
-    border-color: #4cb4ff;
-    background: rgba(76, 180, 255, 0.08);
+    border-color: #9b82ff;
+    background: rgba(155, 130, 255, 0.08);
     color: #e8e8ec;
   }
 
@@ -2565,10 +2565,10 @@
     background: none;
   }
 
-  /* Blue means one thing here as everywhere else: this is the live one. */
+  /* The accent means one thing here as everywhere else: this is the live one. */
   .kbadge.recording {
-    border-color: #1e88ff;
-    background: rgba(30, 136, 255, 0.18);
+    border-color: #734eff;
+    background: rgba(115, 78, 255, 0.18);
     color: #fff;
   }
 
@@ -2619,7 +2619,7 @@
   }
 
   .kadd:hover {
-    border-color: #4cb4ff;
+    border-color: #9b82ff;
     border-style: solid;
     color: #fff;
   }
@@ -2659,8 +2659,8 @@
 
   .lang-add:hover,
   .lang-add.open {
-    border-color: #4cb4ff;
-    background: rgba(76, 180, 255, 0.1);
+    border-color: #9b82ff;
+    background: rgba(155, 130, 255, 0.1);
     color: #e8e8ec;
   }
 

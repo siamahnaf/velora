@@ -106,7 +106,7 @@
     {/if}
     <!-- The countdown, keyed so a restarted one gets a fresh element and
          therefore replays its animation instead of inheriting a finished
-         one. Blue like .card-progress, and for the same reason: it lies
+         one. Violet like .card-progress, and for the same reason: it lies
          over an arbitrary video frame, where white disappears. -->
     {#if side === 'next' && counting}
       {#key seq}
@@ -143,7 +143,7 @@
   /* The start screen's half of this pair moved to StartScreen.svelte with its
      markup; `.endcard` is still drawn here. */
   .endcard:hover .card-poster {
-    outline: 2px solid #4cb4ff;
+    outline: 2px solid #9b82ff;
     outline-offset: 1px;
   }
 
@@ -240,14 +240,14 @@
   }
 
   /* The countdown drains rather than fills: what it reports is the time left,
-     and it lies over an arbitrary video frame, which is why it is blue like
+     and it lies over an arbitrary video frame, which is why it is violet like
      .card-progress and not white like every other readout. */
   .endprogress {
     position: absolute;
     left: 0;
     bottom: 0;
     height: 3px;
-    background: #1e88ff;
+    background: #734eff;
     animation: end-advance var(--advance) linear forwards;
   }
 

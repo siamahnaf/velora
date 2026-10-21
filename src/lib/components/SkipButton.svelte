@@ -71,7 +71,7 @@
      hidden whenever one of them is open rather than fighting it for the space.
      A pill like .updbtn, which is the same species of control: a suggested
      action that turns up when it is relevant and leaves on its own. The surface
-     is the shared floating-surface value, not an blue fill — over arbitrary
+     is the shared floating-surface value, not an violet fill — over arbitrary
      video the accent shouts, and it means "on/selected" everywhere else. */
   .skipbtn {
     position: absolute;
@@ -98,7 +98,7 @@
        is nothing left to distort or to escape — and it removes the ::before,
        and with it the z-index/isolation pair that gotcha 9 forces on every
        absolutely positioned pseudo-element in this file.
-       White rather than blue: this reports a value, it does not offer a
+       White rather than violet: this reports a value, it does not offer a
        choice — the rule that keeps .seekfill white. */
     background-color: rgba(16, 16, 22, 0.92);
     background-image: linear-gradient(rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.1));

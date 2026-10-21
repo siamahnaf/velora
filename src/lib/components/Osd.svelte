@@ -90,7 +90,7 @@
     overflow: hidden;
   }
 
-  /* White, like the seekbar fill. Blue here would mean "selected / on /
+  /* White, like the seekbar fill. Violet here would mean "selected / on /
      primary action" — that is all it means everywhere else in this UI — while
      the OSD bar selects nothing and is not interactive at all: it merely
      reports a value. It came out inverted: the thing you drag (the seekbar) was

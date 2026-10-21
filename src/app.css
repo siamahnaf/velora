@@ -90,7 +90,7 @@
 }
 
 :focus-visible {
-  outline: 2px solid #4cb4ff;
+  outline: 2px solid #9b82ff;
   outline-offset: 1px;
 }
 
@@ -171,7 +171,7 @@ input {
    ───────────────────────────────────────────────────────────────────────── */
 
 button.primary {
-  background: #1e88ff;
+  background: #734eff;
   color: #ffffff;
   border: none;
   border-radius: 8px;
@@ -229,11 +229,11 @@ button.btn-outline:hover:not(:disabled) svg {
   opacity: 1;
 }
 
-/* Fills left to right as the bytes arrive. Blue, because this reports
+/* Fills left to right as the bytes arrive. Violet, because this reports
    progress of something the viewer asked for and is waiting on — the same
-   reason .card-progress is blue over a video frame. */
+   reason .card-progress is violet over a video frame. */
 button.btn-outline.progressing {
-  background-image: linear-gradient(rgba(30, 136, 255, 0.35), rgba(30, 136, 255, 0.35));
+  background-image: linear-gradient(rgba(115, 78, 255, 0.35), rgba(115, 78, 255, 0.35));
   background-repeat: no-repeat;
   background-size: var(--pct, 0%) 100%;
   transition: background-size 0.25s linear;
@@ -245,7 +245,7 @@ button.btn-outline:disabled {
 }
 
 button.primary:hover {
-  background: #4cb4ff;
+  background: #9b82ff;
 }
 
 .menu-sep {
@@ -276,7 +276,7 @@ button.primary:hover {
 
 .link-input:focus {
   outline: none;
-  border-color: #1e88ff;
+  border-color: #734eff;
 }
 
 .link-error {
@@ -340,7 +340,7 @@ button.primary:hover {
   bottom: -1px;
   height: 2px;
   border-radius: 2px;
-  background: #1e88ff;
+  background: #734eff;
 }
 
 .switch {
@@ -358,7 +358,7 @@ button.primary:hover {
 }
 
 .switch.on {
-  background: #1e88ff;
+  background: #734eff;
 }
 
 .switch:hover {
@@ -366,7 +366,7 @@ button.primary:hover {
 }
 
 .switch.on:hover {
-  background: #4cb4ff;
+  background: #9b82ff;
 }
 
 .switch-knob {
@@ -434,7 +434,7 @@ button.primary:hover {
 }
 
 .segopt.sel {
-  background: #1e88ff;
+  background: #734eff;
   color: #ffffff;
   font-weight: 500;
 }
@@ -517,14 +517,14 @@ button.primary:hover {
   border: none;
   padding: 0;
   font-size: inherit;
-  color: #4cb4ff;
+  color: #9b82ff;
   cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
 .settings-link:hover {
-  color: #9cd5ff;
+  color: #c4b5ff;
 }
 
 .settings-link:disabled {
@@ -618,7 +618,7 @@ button.primary:hover {
 }
 
 .menu-item.sel {
-  color: #4cb4ff;
+  color: #9b82ff;
   font-weight: 600;
 }
 
@@ -653,7 +653,7 @@ button.primary:hover {
 
 .speedopt.sel {
   color: #ffffff;
-  background: #1e88ff;
+  background: #734eff;
   font-weight: 600;
 }
 

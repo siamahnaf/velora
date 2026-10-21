@@ -1093,8 +1093,40 @@ mod imp {
             }
             if removed > 0 || kept > 0 {
                 eprintln!("[update] swept {removed} leftover(s), {kept} still in use");
+                // Leftovers mean an update just landed. The executable kept
+                // its path, so the shell would go on showing the icon it
+                // cached for that path — in the Start menu, the taskbar and
+                // every shortcut — until something tells it the file changed.
+                refresh_shell_icons();
             }
         });
+    }
+
+    /// Tell Explorer the executable changed and its icons are stale.
+    fn refresh_shell_icons() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::{
+            SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNE_UPDATEITEM, SHCNF_IDLIST, SHCNF_PATHW,
+        };
+        let Ok(exe) = std::env::current_exe() else { return };
+        let wide: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: `wide` is a NUL-terminated path that outlives both calls; the
+        // second is the documented "everything changed" notification, which
+        // takes no item pointers.
+        unsafe {
+            SHChangeNotify(
+                SHCNE_UPDATEITEM as i32,
+                SHCNF_PATHW,
+                wide.as_ptr().cast(),
+                std::ptr::null(),
+            );
+            SHChangeNotify(
+                SHCNE_ASSOCCHANGED as i32,
+                SHCNF_IDLIST,
+                std::ptr::null(),
+                std::ptr::null(),
+            );
+        }
     }
 
     /// Whatever is at this path, gone. A directory is the only thing we ever

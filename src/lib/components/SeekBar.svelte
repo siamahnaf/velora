@@ -203,7 +203,7 @@
     background: #fff;
   }
 
-  /* The A–B segment. Blue because it lies over the bar's own white fill and
+  /* The A–B segment. Violet because it lies over the bar's own white fill and
      the video behind it, where another white would simply vanish — the same
      exception .card-progress makes. Under the chapter notches and the knob in
      DOM order, so neither is swallowed by it. */
@@ -211,7 +211,7 @@
     position: absolute;
     top: -2px;
     bottom: -2px;
-    background: rgba(30, 136, 255, 0.55);
+    background: rgba(115, 78, 255, 0.55);
     border-radius: 2px;
     pointer-events: none;
     transition: background 0.15s ease;
@@ -221,7 +221,7 @@
      gone: the segment is still there to come back to, and mpv re-arms it by
      itself the moment playback is inside it again. */
   .abregion.disarmed {
-    background: rgba(30, 136, 255, 0.2);
+    background: rgba(115, 78, 255, 0.2);
   }
 
   /* Chapter boundaries: a notch cut through both the fill and the empty part of

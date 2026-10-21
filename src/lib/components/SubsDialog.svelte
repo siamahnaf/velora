@@ -369,7 +369,7 @@
     margin: 4px 0 10px;
     padding: 10px 12px 12px;
     border-radius: 8px;
-    background: rgba(30, 136, 255, 0.14);
+    background: rgba(115, 78, 255, 0.14);
     color: #e8e8ec;
     font-size: 13px;
     line-height: 1.45;
@@ -390,11 +390,11 @@
     font-size: 10.5px;
   }
 
-  /* Blue means one thing in this UI — selected / on / primary — and "this is
+  /* The accent means one thing in this UI — selected / on / primary — and "this is
      the one that matches your file" is exactly that. */
   .subs-badge.match {
     border-color: transparent;
-    background: #1e88ff;
+    background: #734eff;
     color: #fff;
   }
 

@@ -752,7 +752,7 @@
   }
 
   .menu-item.active {
-    color: #4cb4ff;
+    color: #9b82ff;
   }
 
   /* segmented control */
@@ -805,7 +805,7 @@
   }
 
   .adj-row output.changed {
-    color: #4cb4ff;
+    color: #9b82ff;
   }
 
   .crop-note {

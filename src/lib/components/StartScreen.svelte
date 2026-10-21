@@ -768,10 +768,10 @@
     letter-spacing: 0.04em;
   }
 
-  /* Blue, and the one place on the row that is: an update is the thing on
+  /* Violet, and the one place on the row that is: an update is the thing on
      this screen worth acting on, and the button it belongs to is lit the same. */
   .torrow-update-line {
-    color: #9cd5ff;
+    color: #c4b5ff;
   }
 
   .torrow-working {
@@ -928,10 +928,10 @@
   }
 
   /* Written to beat `.torrow-forget:hover` (four classes), not left to source
-     order — the lesson this file has now learned twice. Blue rather than the
+     order — the lesson this file has now learned twice. Violet rather than the
      cross's red-ish white: this one adds episodes. */
   .card-forget.torrow-forget.torrow-update:hover:not(:disabled) {
-    color: #9cd5ff;
+    color: #c4b5ff;
   }
 
   /* Lit at rest while an update is waiting — the feed found it without being
@@ -939,7 +939,7 @@
      itself. Five classes, to beat the row-hover rule above. */
   .card-forget.torrow-forget.torrow-update.found,
   .torrow:hover .card-forget.torrow-forget.torrow-update.found {
-    color: #4cb4ff;
+    color: #9b82ff;
   }
 
   /* The torrent playing right now. Clearly below the resting strength above, or
@@ -1112,7 +1112,7 @@
     left: 0;
     bottom: 0;
     height: 3px;
-    background: #1e88ff;
+    background: #734eff;
   }
 
   /* The card's caption, and with it the tooltip's hit area: the name and the
@@ -1242,7 +1242,7 @@
   /* The end screen's twin of this lives in +page.svelte, where `.endcard` is
      drawn. */
   .card-open:hover .card-poster {
-    outline: 2px solid #4cb4ff;
+    outline: 2px solid #9b82ff;
     outline-offset: 1px;
   }
   .panel h1 {
