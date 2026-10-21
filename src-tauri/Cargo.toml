@@ -1,0 +1,204 @@
+[package]
+name = "velora"
+version = "1.3.0"
+description = "Video player for Windows and macOS built on libmpv: frame-accurate seeking, seekbar previews and live torrent streaming"
+authors = ["Evgenii Zakharov"]
+edition = "2021"
+# Velora's own code. Copyleft on purpose: the LGPL work on the bundled
+# libraries bought the freedom to make this application closed or paid, and a
+# permissive license would have handed that same freedom to a closed fork. The
+# libraries keep their own licenses — see THIRD-PARTY-NOTICES.md, which ships
+# inside the application.
+license = "GPL-3.0-or-later"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "velora_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-libmpv = "0.3.2"
+tauri-plugin-dialog = "2.7.2"
+ffmpeg-the-third = "5.0.0"
+tauri-plugin-single-instance = "2.4.3"
+# png: decoding the frame mpv wrote, on its way to the clipboard (screenshot.rs).
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+arboard = "3"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
+# Downloading yt-dlp into our own data directory (see ytdlp_install). Already in
+# the tree via tauri-plugin-updater; rustls rather than the system TLS stack so
+# the two agree on one backend.
+# Only for StreamExt::next over the download body.
+futures-util = { version = "0.3", default-features = false }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "charset", "stream", "json", "socks"] }
+# Torrent RSS feeds (feed.rs). Both already in the tree — quick-xml via
+# librqbit's UPnP and plist, encoding_rs via reqwest's `charset` — so this names
+# them rather than adding anything. A real parser because feeds come in a
+# handful of namespaced dialects, which is past what string scanning survives.
+quick-xml = { version = "0.41", default-features = false }
+encoding_rs = "0.8"
+# OpenSubtitles credentials in the OS keychain (macOS Keychain, Windows
+# Credential Manager) rather than in a file of ours: a reused password is the
+# most sensitive thing this app will ever hold. Native backends only — the
+# secret-service one would drag in D-Bus for a platform we do not ship.
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+# Not a new dependency — it is already in the lock under librqbit — but a named
+# one, because `librqbit::storage::TorrentStorage` is written in terms of
+# `anyhow::Result` and torrent_storage.rs implements that trait.
+anyhow = "1"
+
+# Torrent streaming (ROADMAP 21). The stable 8.x line rather than 9.0.0-rc: this
+# ships in an installer, and a pre-release BitTorrent stack is not what a video
+# player wants underneath it. `rust-tls` rather than the default `default-tls`,
+# so trackers use the same rustls backend reqwest already pulls in instead of
+# adding a second TLS stack to the bundle.
+# `disable-upload` is a compile-time feature that unlocks a RUNTIME flag
+# (`SessionOptions.disable_upload`) — without it the field does not exist and
+# there is no way to stop seeding at all: `LimitsConfig.upload_bps` is a
+# `NonZeroU32`, so even "zero" cannot be expressed. With the feature on and the
+# flag false, behaviour is identical to the feature being off.
+librqbit = { version = "9.0.1", default-features = false, features = ["rust-tls", "disable-upload"] }
+# The local HTTP server mpv opens (torrent.rs). hyper/tokio are already in the
+# tree via reqwest and tauri, so this is a handful of lines of framing rather
+# than a new dependency — and it is why librqbit's own `http-api` feature (axum
+# + tower-http, a whole web framework for one route) stays off.
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["net", "rt", "io-util", "macros", "sync", "time", "fs"] }
+tokio-util = { version = "0.7", features = ["io"] }
+bytes = "1"
+
+# Casting (Google Cast) — cast.rs. The CASTV2 sender protocol is spoken
+# directly: TLS to the device's 8009, 4-byte-BE-length-framed protobuf envelopes
+# whose payloads are JSON in four namespaces. `rust_cast` was tried first and
+# rejected after reading its source (see casting.md): its MessageManager holds
+# the stream mutex across a blocking `read_exact` with no timeout, so a command
+# sent while its receive loop waits for traffic stalls for up to seconds —
+# exactly wrong for a remote control — and it drags in protobuf + a codegen
+# build step + a second TLS provider (aws-lc-rs via rustls' default features)
+# for what is, for our subset, one ~60-line hand-encoded message type.
+# `tokio-rustls` pins the `ring` provider because the tree compiles both ring
+# and aws-lc-rs (reqwest vs. others), and rustls' plain builder() panics when
+# two providers are enabled. `mdns-sd` browses `_googlecast._tcp` with no
+# system service; `if-addrs` picks the LAN interface on the chosen device's
+# subnet, so the file server binds an address the TV can actually reach.
+# `rand` mints the per-cast URL token (the server serves exactly one registered
+# file, never a directory).
+mdns-sd = "0.20"
+if-addrs = "0.13"
+# SSDP has to leave by a named interface, which needs IP_MULTICAST_IF — neither
+# std nor tokio exposes it. Already in the tree via hyper/tokio.
+socket2 = "0.6"
+rand = "0.9"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+# The Windows in-place update (update.rs), and neither is new to the tree: `zip`
+# arrives with tauri-plugin-updater — which takes it with no codec features at
+# all, so `deflate-flate2` is what this line adds, and it is pure Rust over the
+# miniz_oxide already there rather than a C codec. `sha2` arrives with the
+# keychain crates. Deflate is what the payload is compressed with: measured
+# against the installer it is 117 MB where solid LZMA is 86, and reading it
+# needs nothing built from C — see the compression table in docs/distribution.md
+# for what the other codecs would have bought.
+zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
+sha2 = "0.10"
+
+# macOS: native window chrome (rounded corners, transparent title bar, the
+# system traffic-light buttons) — see macos_chrome in lib.rs.
+[target.'cfg(target_os = "macos")'.dependencies]
+# `exception`: `catch` around the toolbar calls AppKit makes during a
+# fullscreen transition (see `set_toolbar_guarded`).
+objc2 = { version = "0.6.4", features = ["exception"] }
+objc2-app-kit = { version = "0.3.2", features = [
+    "NSWindow",
+    "NSView",
+    "NSResponder",
+    "NSEvent",
+    "NSScreen",
+    "NSAppearance",
+    "NSColor",
+    "NSToolbar",
+    "block2",
+] }
+block2 = "0.6"
+objc2-foundation = "0.3.2"
+# net_route: the interface names people see ("Wi-Fi") and which interface has a
+# router, from SystemConfiguration. Already in the tree via the keychain crates.
+core-foundation = "0.10"
+# QoS of the thumbnail storyboard's background thread (thumb_service::background_qos).
+libc = "0.2"
+
+# Windows only: hdr_status / double_click_time / sync_drag_resize_borders
+# (in lib.rs under #[cfg(windows)]).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Devices_Display",
+    "Win32_Graphics_Gdi",
+    "Win32_Foundation",
+    "Win32_System_Power",
+    # FSCTL_SET_SPARSE, for the torrent storage: NTFS gives no sparse file
+    # unless somebody asks, and a season that is not sparse occupies all of
+    # itself from the first open (torrent_storage::mark_file_sparse).
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    # net_route: the adapter list (GetAdaptersAddresses) — type, gateway and
+    # metric, which is what tells a way out from a VPN adapter.
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    # trash.rs: the Recycle Bin (SHFileOperationW), and the drive type that
+    # says whether this volume has one at all.
+    "Win32_UI_Shell",
+    "Win32_Storage_FileSystem",
+    "Win32_System_WindowsProgramming",
+    # update.rs: waiting for the copy that relaunched us to exit, which is what
+    # frees the single-instance guard and lets the renamed images be deleted.
+    "Win32_System_Threading",
+    # libmpv_load.rs: loading libmpv ourselves (and the Vulkan loader before
+    # it), so that a failure keeps the system's reason rather than the
+    # plugin's "Failed to create mpv instance".
+    "Win32_System_LibraryLoader",
+    "Win32_System_Diagnostics_Debug",
+] }
+# audio_output.rs: the default output device (IMMDeviceEnumerator) and its
+# name, for the per-device audio offset. The version is the one WebView2's
+# bindings already put in the tree.
+windows = { version = "0.61", features = [
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Foundation",
+    "Win32_System_Variant",
+] }
+# shell_handler.rs: a path the shell can read back — a \? prefix in a
+# registry command line is not something Explorer handles.
+dunce = "1"
+# update.rs: DisplayVersion and EstimatedSize in the uninstall entry, which is
+# the one thing an in-place update has to tell the system about itself.
+windows-registry = "0.5"
+
+# librqbit crates vendored with changes upstream has in no release — see
+# vendor/README.md for each one. The DHT survives Windows' routine UDP recv
+# errors, librqbit carries MSE and two accessors, and dualstack-sockets can bind
+# a socket to an interface on Windows (the "past the VPN" route setting).
+[patch.crates-io]
+librqbit = { path = "vendor/librqbit" }
+librqbit-dht = { path = "vendor/librqbit-dht" }
+librqbit-dualstack-sockets = { path = "vendor/librqbit-dualstack-sockets" }
+

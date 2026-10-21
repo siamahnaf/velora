@@ -1,0 +1,1048 @@
+/*
+ * Document-level styles, loaded from +layout.svelte.
+ *
+ * Everything here is deliberately outside a component's <style> block, because
+ * Svelte scopes those: a rule written in the page would stop applying the
+ * moment the markup it targets moves into a child component. These five groups
+ * are the ones that have to survive that move — the box-sizing reset, font
+ * faces, focus rings, the form-control font reset and the scrollbar skin.
+ *
+ * html/body deliberately stay in the page component: `background: transparent`
+ * is what lets mpv show through, and the veil window needs the opposite. Two
+ * routes, two answers, so it does not belong in a shared sheet.
+ */
+
+/* Every box is its border box. This project went without the reset for a long
+   time and paid for it in a way that never looked like a box-sizing problem:
+   the symptom is always "something is a pixel or two off", and the cause is
+   always a border or a padding sitting outside the number that was written
+   down. Four found in a single session — the mini player's exit button, whose
+   1px border broke the concentric-corner arithmetic; the preview's crossfade
+   layer, 4px too big over a `height: 100%` because of its own 2px outline; the
+   context menu, rendering 14px taller than the `max-height` the placement gave
+   it and walking off the window edge; and the carousel arrow, a 34px circle in
+   a 32px button with the chevron a pixel off center. Each cost a measurement
+   in a headless browser to find, and each was then fixed with a local
+   `box-sizing: border-box` — nine of those had accumulated, which is the reset
+   written out one element at a time and only where somebody had already been
+   bitten.
+   `*::before, *::after` are included: a decorative box is exactly the kind
+   that gets a border and is never measured.
+   What this does NOT touch is `<button>` and `<select>`, which both engines
+   already make border-box in their own stylesheets — measured in headless
+   Chrome and in a WKWebView harness, and it is why all nine of those local
+   declarations sat on a div, a span, an img or an input. Buttons are most of
+   the small controls here, so most of the app was already border-box and the
+   reset is what makes the rest agree with it.
+   Sizes elsewhere were adjusted to keep what is on screen unchanged — the
+   figures in this project are outer sizes (a hover preview is 184px because
+   the seekbar's clamp says 92), so what moved was the declaration, not the
+   pixel. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+@font-face {
+  font-family: 'Rubik';
+  src: url('/fonts/rubik-cyrillic.woff2') format('woff2');
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+
+@font-face {
+  font-family: 'Rubik';
+  src: url('/fonts/rubik-cyrillic-ext.woff2') format('woff2');
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+
+@font-face {
+  font-family: 'Rubik';
+  src: url('/fonts/rubik-latin.woff2') format('woff2');
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Rubik';
+  src: url('/fonts/rubik-latin-ext.woff2') format('woff2');
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0332,
+    U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* Focus ring: hidden on mouse clicks, shown (in the theme color) only for
+   keyboard navigation (:focus-visible is set by the browser itself). */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid #4cb4ff;
+  outline-offset: 1px;
+}
+
+/* Programmatically focusable containers (tabindex=-1, e.g. the OSC) must not
+   show the ring: Chromium "upgrades" their click focus to focus-visible on a
+   subsequent key press */
+[tabindex='-1']:focus-visible {
+  outline: none;
+}
+
+/* Form controls do not inherit the font by default (UA styles), which is why
+   buttons were drawn in the system font instead of Rubik */
+button,
+input {
+  font-family: inherit;
+}
+
+/* Scrollbar skin, applied to EVERYTHING rather than to an opt-in class.
+   Without these rules Windows draws its native gray-and-white bar: wide, light
+   and alien in a dark UI. A transparent border on the thumb leaves 4px of the
+   10px width visible — thin, but still easy to hit, because the whole track is
+   clickable.
+   A side effect, welcome here: on macOS, declaring ::-webkit-scrollbar switches
+   the bar from overlay (semi-transparent, disappearing) to permanent — so the
+   two platforms stop diverging.
+   This was a `.scrollable` class first, itself a replacement for a list of
+   surface selectors, and both had the same failure: a surface that starts
+   scrolling without being told to. The context-menu submenus inherited
+   `overflow-y: auto` from the menu they share a class with and drew native
+   bars on Windows, and nothing in the code said so — the mistake is invisible
+   on macOS, where the overlay bar is dark and nearly transparent anyway.
+   There is no page content here that should keep the platform's own bars, so
+   the safe default is all of them. `.scrollable` is still on the markup as a
+   note that a surface is meant to scroll; it no longer carries the styling. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Shared control vocabulary.
+
+   These are the classes more than one component draws with — buttons, form
+   controls, dialog body chrome, menu rows. They live here for the reason the
+   rest of this file exists: Svelte scopes a component's `<style>`, so a rule
+   written in the page stops applying the moment its markup moves into a child.
+   Everything below was in +page.svelte until that page was split up, and every
+   one of these rules is used from at least two components now.
+
+   Two things to know before adding to this list. A region-specific override
+   belongs with its region, not here — it is written as `.base.regional`, which
+   is two classes against one and therefore wins on specificity no matter which
+   file it ends up in. And a *lone* modifier class of equal weight does not win
+   on anything but source order, which is how the queue rows lost `display:
+   flex` and the torrent list's delete button flew to the corner of the window;
+   `bun run css-diff` reports such a flip, but writing the two-class selector is
+   what prevents it.
+   ───────────────────────────────────────────────────────────────────────── */
+
+button.primary {
+  background: #1e88ff;
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 22px;
+  font-size: 15px;
+  /* Rubik 600 clumps at small sizes — 500 plus a little tracking is softer */
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+}
+
+/* The secondary action next to .primary. A real button rather than a link:
+   a link promises navigation, and these open a dialog or download a binary —
+   the same reasoning that makes the destructive actions real buttons. */
+button.btn-outline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  padding: 9px 20px;
+  color: #d6d6de;
+  font-size: 15px;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+}
+
+button.btn-outline:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #e8e8ec;
+}
+
+/* A button that starts with an icon needs less padding in front of it than
+   one that starts with a word. Measured: the glyph itself is symmetric in its
+   box (1.25px of clearance each side), so the gap is not arithmetic — a
+   sparse two-stroke mark simply reads as beginning further right than dense
+   text does, and the leading space then looks larger than the trailing one.
+   Scoped by `:has`, because the same class is used without an icon in the
+   link dialog, where trimming would introduce the very asymmetry it fixes. */
+button.btn-outline:has(svg) {
+  padding-left: 16px;
+}
+
+button.btn-outline svg {
+  width: 14px;
+  height: 14px;
+  /* Slightly below the label's own weight: the glyph is decoration, the
+     words are the button. */
+  opacity: 0.8;
+}
+
+button.btn-outline:hover:not(:disabled) svg {
+  opacity: 1;
+}
+
+/* Fills left to right as the bytes arrive. Blue, because this reports
+   progress of something the viewer asked for and is waiting on — the same
+   reason .card-progress is blue over a video frame. */
+button.btn-outline.progressing {
+  background-image: linear-gradient(rgba(30, 136, 255, 0.35), rgba(30, 136, 255, 0.35));
+  background-repeat: no-repeat;
+  background-size: var(--pct, 0%) 100%;
+  transition: background-size 0.25s linear;
+}
+
+button.btn-outline:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary:hover {
+  background: #4cb4ff;
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 5px 8px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.menu-item:disabled {
+  color: #6a6a74;
+  cursor: default;
+}
+
+.menu-item:disabled:hover {
+  background: transparent;
+}
+
+.link-input {
+  width: 100%;
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e8e8ec;
+  font-size: 13px;
+}
+
+.link-input:focus {
+  outline: none;
+  border-color: #1e88ff;
+}
+
+.link-error {
+  margin-top: 2px;
+  color: #f0a0a0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.setting {
+  margin-bottom: 12px;
+}
+
+/* ---- Dialog tabs ----
+   Deliberately underlines rather than pills: pills are already taken by the
+   segmented value switch (.segmented), and giving navigation and a setting
+   the same look reads as the same control. */
+.tabs {
+  display: flex;
+  /* Seven sections rather than two: the Russian labels need every pixel here,
+     and the row must not wrap — a second line of tabs reads as two rows of
+     something else. The scroll is a last resort and, with no scrollbar to
+     show for it, an *invisible* one: a tab past the edge is simply gone. So
+     adding a section means re-measuring `.settings`' width, which is sized
+     from this row for exactly that reason — the six-tab row had quietly been
+     overflowing it. */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  gap: 13px;
+  margin: 4px 0 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.tab {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 6px 2px 10px;
+  white-space: nowrap;
+  border: none;
+  background: transparent;
+  color: #8f8f9c;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.tab:hover {
+  color: #d6d6de;
+}
+
+.tab.sel {
+  color: #e8e8ec;
+}
+
+.tab.sel::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: #1e88ff;
+}
+
+.switch {
+  flex: none;
+  position: relative;
+  width: 38px;
+  height: 22px;
+  margin-top: 1px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.switch.on {
+  background: #1e88ff;
+}
+
+.switch:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.switch.on:hover {
+  background: #4cb4ff;
+}
+
+.switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+
+.switch.on .switch-knob {
+  transform: translateX(16px);
+}
+
+/* A destructive action: an ordinary button, but red — it must not be styled
+   as a link, since a link promises navigation, not deletion. */
+.btn-danger {
+  margin-top: 10px;
+  padding: 8px 14px;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 8px;
+  background: transparent;
+  color: #f87171;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.btn-danger:hover {
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.6);
+}
+
+.setting-label {
+  color: #b9b9c3;
+  font-size: 12.5px;
+  margin-bottom: 6px;
+}
+
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+}
+
+.segopt {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #d6d6de;
+  font-size: 12px;
+  padding: 7px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.segopt:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.segopt.sel {
+  background: #1e88ff;
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.segopt:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.segopt:disabled:hover {
+  background: transparent;
+}
+
+/* A slider and its readout. The readout is fixed-width and tabular so the
+   digits do not shuffle the slider sideways while it is being dragged. */
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.slider-value {
+  flex: 0 0 52px;
+  text-align: right;
+  color: #d6d6de;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A settings row whose control sits to the right of its own label and hint.
+   Here rather than in a component because two of them draw it — the settings
+   sheet and the room panel — and a class one component declares is a class the
+   other renders unstyled. That is the `.speedopt` failure written down in
+   CLAUDE.md, and `css-orphans` is what caught this one before it shipped:
+   the room's three switches would have come out as bare stacked boxes. */
+.row-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.row-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.row-text .setting-label {
+  margin-bottom: 3px;
+}
+
+.row-text .setting-hint {
+  margin-top: 0;
+}
+
+.setting-hint {
+  color: #77777f;
+  font-size: 11.5px;
+  margin-top: 5px;
+}
+
+/* A hint explains what is above it; a control below it needs air, or the two
+   read as one block — which is how "from the file name…" ended up glued to
+   the language pills. Written as a sibling rule rather than a modifier class,
+   so it holds wherever the pair occurs. */
+.setting-hint + .segmented {
+  margin-top: 12px;
+}
+
+.settings-foot {
+  color: #77777f;
+  font-size: 11.5px;
+  line-height: 1.45;
+  margin-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  padding-top: 10px;
+}
+
+.settings-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  color: #4cb4ff;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.settings-link:hover {
+  color: #9cd5ff;
+}
+
+.settings-link:disabled {
+  color: #77777f;
+  cursor: default;
+  text-decoration: none;
+}
+
+.menu {
+  position: absolute;
+  /* Anchored to the top of the control bar, not to a measured number. The
+     containing block is `.osc`, which has no top padding, so `100%` lands on
+     the top edge of the seekbar row — i.e. on the top of the elapsed/duration
+     line — and the offset is the gap the panel keeps above it.
+     That gap is the one already between the timestamps and the seekbar:
+     `.seekwrap` sets `margin-top: 6px` and `padding: 6px 0`, so the track
+     starts 12px under the time row and the panel now stops 12px over it.
+     It used to be a flat `bottom: 100px`, which was the height of the bar
+     worked out by hand (12 + 42 + 8 + 16 + 6 + the 12px line) — correct to
+     within 2px, and those 2px were the entire gap: the panel sat on the
+     timestamps. The percentage also follows the bar wherever its height is
+     not that sum, which the mini player is.
+     `right` is the window's edge line — see `.controls` in Controls.svelte. */
+  bottom: calc(100% + 12px);
+  right: 20px;
+  min-width: 256px;
+  /* The panel sizes itself to its longest row, and without a ceiling that is
+     unbounded in the one direction nobody watches: it is positioned by its
+     RIGHT edge with `left: auto`, so it grows leftwards and simply walks off
+     the window. Measured with a long release name in a 700px player — the
+     box came out 972px wide at `offsetLeft: -297`, clipped by `.player`, with
+     the name intact but unreachable and the × sitting over it. The text was
+     not overflowing anything, which is why the ellipsis (correct all along)
+     never fired: the panel kept growing instead.
+     So: grow with the content, stop before the window edge. The viewport term
+     is what makes the mini player work, where 520px does not exist. */
+  max-width: min(520px, calc(100vw - 48px));
+  /* 300px was written for a full-sized window; in the mini player the whole
+     player is shorter than that, and the panel would run off the top edge.
+     The subtrahend is the bar plus the gap above it (~110px) plus 32px of
+     clearance from the top of the window, so it moves with `bottom`.
+     The cap has a name because `MenuBody` asks which of the two terms won: the
+     fades at the ends of the list are drawn only while the panel stands at its
+     full height, and not once the window is what cuts it short. */
+  --menu-cap: 300px;
+  max-height: min(var(--menu-cap), calc(100vh - 142px));
+  /* The panel is the surface and nothing else: what scrolls is the list inside
+     it (`MenuBody`), and the 6px around the rows went in there with them. Two
+     boxes rather than one because the list's edges fade under a mask, and a
+     mask takes the masked element's own background with it — on one box the
+     panel itself would dissolve at both ends. A column, so the cap above is
+     handed down to the list as the height it may shrink to. */
+  display: flex;
+  flex-direction: column;
+  /* The list's corners are square and the panel's are not. */
+  overflow: hidden;
+  background: rgba(16, 16, 22, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+
+.menu-title {
+  color: #9a9aa5;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 6px 10px;
+}
+
+/* `width: 100%` is the row filling the menu, not overhanging it by its own
+   20px of padding — and it always was: a <button> is border-box in both
+   engines' own stylesheets, which is why every one of the nine local
+   `box-sizing` declarations this project accumulated sat on something that
+   was NOT a button. Measured before and after the reset, this row and the
+   `.hint` at its right edge do not move by a pixel. */
+.menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #d6d6de;
+  font-size: 13px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.menu-item.sel {
+  color: #4cb4ff;
+  font-weight: 600;
+}
+
+/* One cell of a compact action row inside a menu — the speed presets in the
+   context menu and the −/+ delay stepper in the track menus. It lives here
+   rather than beside either of them because both use it: the base rule sat in
+   ContextMenu.svelte while the delay stepper is a sibling component, so after
+   the split those two buttons matched nothing but their own override and
+   rendered as native push buttons. Scoping makes that invisible to
+   `css-orphans` — the class is still used where it is declared; what moved out
+   is the *other* user of it.
+
+   Vertically it is the glyph, not the line box, that has to be centered: with a
+   +/− alone in the button, text metrics put the mark high (the box reserves
+   descender space the glyph does not use). `place-items: center` on a grid
+   centers the line box, which is why the stepper carries a measured correction
+   of its own — see `.delayrow .speedopt`. */
+.speedopt {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #d6d6de;
+  font-size: 12px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+
+.speedopt:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.speedopt.sel {
+  color: #ffffff;
+  background: #1e88ff;
+  font-weight: 600;
+}
+
+/* The crop row's "auto" while a detection runs, and for a stream, where it
+   cannot run at all. Same treatment as a disabled `.segopt`. */
+.speedopt:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.speedopt:disabled:hover {
+  background: transparent;
+}
+
+/* A line of explanation inside a menu — why a control is missing or inert.
+   Shared by the cast picker and the track menu, which says the same kind of
+   thing about a DLNA session. */
+.cast-hint {
+  padding: 8px 14px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(232, 232, 236, 0.4);
+  max-width: 300px;
+}
+
+/* A dialog's footer row: secondary actions left, the primary one at the right
+   edge. Three dialogs draw it — the link box, the subtitle panel's sign-in and
+   the torrent update — so it belongs to none of them. */
+.link-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.spinner {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+}
+
+.spinner.on {
+  opacity: 1;
+  transition: opacity 0.12s ease 0.18s;
+}
+
+/* 27, which is the 22 this was written as plus its 2.5px ring on each side:
+   the same circle over the preview as before, now as an outer size. */
+.spinner::after {
+  content: '';
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  animation: spin 0.8s linear infinite;
+}
+
+
+/* Travels with `.spinner` above. Svelte rewrites a keyframe name to a scoped
+   one and rewrites the `animation` shorthand that uses it — but only inside the
+   same component, so leaving this behind in a page whose spinner had moved out
+   left the rule pointing at a name that no longer existed and the spinner
+   simply stopped turning. Caught by `bun run css-diff`, which saw the compiled
+   `animation: svelte-<hash>-spin` become a bare `animation: spin`. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The recents card's own parts, shared with the end-of-file cards.
+
+   Two components draw a card: the start screen's rail and the end screen's
+   previous/next pair. They are deliberately the same object — a poster, a
+   caption above it and a name below — so the parts are written once here rather
+   than duplicated into both. What is *not* shared stays with its owner: the
+   rail's hover, drag and forget affordances mean nothing at the end of a film,
+   and `.endcard`'s own scrim exists because those two sit directly on the final
+   frame rather than on the start screen's flat background. */
+
+.card-poster {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* No frame to show — either none has been decoded yet, or none ever will
+   (a stream). Darker than everything around it rather than lighter: the old
+   white wash made an empty card the BRIGHTEST thing in a dark grid, which is
+   precisely backwards for something that has nothing in it. A recess reads as
+   "no picture here"; a pale block reads as a picture that failed to load.
+   The hairline keeps the area defined, and is scoped to the empty state so a
+   card with a poster is not framed. */
+.card-poster.empty {
+  background: rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+.card-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Stands in for the frame a stream cannot provide. Dim on purpose: it is a
+   statement about the entry, not a thing to look at. */
+.card-link {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #7b7b8a;
+}
+
+.card-link svg {
+  width: 30px;
+  height: 30px;
+}
+
+.card-name {
+  display: block;
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: #e0e0e6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-left {
+  display: block;
+  font-size: 11.5px;
+  color: #8f8f9c;
+}
+
+
+/* Whatever is drawn over the picture leaves while the window's frame is
+   changing, and comes back when it has stopped: the web content is a frame or
+   two behind the window and pinned to its top-left corner, so for the length
+   of a resize everything floating is drawn somewhere it is not (see
+   `chrome.unsteady`, which is what puts `.unsteady` on the player).
+
+   A class of its own, and here rather than in a component, because it is one
+   rule about surfaces that have nothing else in common — the end screen, the
+   loading plate, the OSD, the skip button, a tooltip, the context menu and the
+   two chips of the top bar — and because the first attempt was the other way
+   round. The two bars were hidden through the state they already read
+   (`chrome.idle`, which the mini player's exit button reads too), and that
+   left every surface which does not read it standing in the middle of the
+   resize: the end screen with its three cards was the one that was seen. A
+   surface added later needs the class and nothing else.
+
+   `!important` three times, each for a reason: the skip button sets its
+   opacity inline and, like the OSD, animates it in; a chip has a transition
+   of its own that is five times too slow; and a surface that is not there
+   must not take the click meant for the picture. What does NOT carry the
+   class is what fills the window — the start screen, the casting screen, a
+   dialog with its backdrop: there is nothing under those to show instead. */
+.player.unsteady .afloat {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity 50ms ease !important;
+}
+
+/* …and back at the pace of the bars, which have a transition for it. Most of
+   these surfaces have none, and were whole again in the frame the edge was let
+   go — a quarter of a second ahead of the bars they left with. */
+.player.settling .afloat {
+  transition: opacity 0.25s ease !important;
+}
+
+/* A full-window layer and the centered box inside it.
+
+   Drawn by four different things — the mpv-failed message, the start screen,
+   the loading indicator and the casting screen — two of which now live in
+   components of their own, so the vocabulary is written once here. `.panel h1`
+   went with the start screen instead: the error overlay uses an `h2`, so that
+   rule was never shared, and Svelte duly reported it dead the moment its markup
+   left. What stays scoped to the page is `.panel .error`, which only the error
+   overlay has. */
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #e8e8ec;
+}
+
+/* 484 = the 420 this was written as plus its own 64px of padding. An outer
+   figure now that boxes are border boxes, and the same width on screen. */
+.panel {
+  text-align: center;
+  max-width: 484px;
+  padding: 32px;
+}
+
+.panel p {
+  color: #9a9aa5;
+  margin: 8px 0 20px;
+}
+
+/* The little spinner beside a status line. Two places raise one — the link
+   dialog while a magnet resolves, and the loading overlay while a network
+   source opens — so it is written once here rather than in whichever of
+   them happened to be extracted first. */
+/* 20 including the 2.5px ring — a spinner written as its content is a circle
+   5px bigger than the number beside it, which is what threw the old two-line
+   alignment off. The border-box reset is what holds this now. */
+.loading-spin {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  animation: spin 0.8s linear infinite;
+  /* A flex item shrinks to fit by default, and a squashed circle is an
+     ellipse. */
+  flex: none;
+}
+
+
+/* The range input's skin.
+
+   Two components draw one: the settings sheet's sliders (subtitle size and
+   position) and the OSC's volume bar. It is written here for the reason the
+   rest of this file exists — but this one is worth naming separately, because
+   it is the case the class-based orphan check could not see. There is no class
+   in the selector at all, so when the settings dialog moved out of the page and
+   took its sliders with it, nothing flagged that the rule had been left behind;
+   the sliders simply reverted to the platform's own and looked stock. The
+   detector in scripts/css-orphans.mjs now reads element and attribute selectors
+   too. */
+input[type='range'] {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    #ffffff var(--progress, 0%),
+    rgba(255, 255, 255, 0.28) var(--progress, 0%)
+  );
+  outline: none;
+  cursor: pointer;
+}
+
+input[type='range']::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: none;
+  transition: transform 0.12s ease;
+}
+
+/* :not(:disabled) is the whole point — the thumb grew under the pointer on a
+   slider that takes no input, which is the control claiming to be live. */
+input[type='range']:hover:not(:disabled)::-webkit-slider-thumb {
+  transform: scale(1.25);
+}
+
+input[type='range']:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* A slider whose zero is in the middle — the picture adjustments — filled from
+   there to the value, whichever side that is on (`bipolarFill`). Two
+   components draw it: the context menu's picture panel and the settings
+   sheet. */
+input[type='range'].bipolar {
+  background: linear-gradient(
+    to right,
+    rgba(255, 255, 255, 0.28) var(--lo, 50%),
+    #ffffff var(--lo, 50%),
+    #ffffff var(--hi, 50%),
+    rgba(255, 255, 255, 0.28) var(--hi, 50%)
+  );
+}
+
+/* The scrolling list panel: the chapter list and the play queue.
+
+   Two components draw one and they deliberately share their markup — the queue
+   is the chapter list with a remove button — so the shape is written once here.
+   `.menu-item.chapter-item` keeps its two-class selector for the reason
+   recorded at the rule: it has to beat `.menu-item`'s `display: block`, and a
+   lone modifier of equal weight is decided by source order, which is how the
+   queue rows lost `display: flex` once already. */
+/* Wider than the track menus: chapter titles are sentences, not track names. */
+.menu.chapters {
+  min-width: 260px;
+  max-width: 380px;
+}
+
+/* `.menu-item.chapter-item`, not `.chapter-item`: the element carries both
+   classes, `.menu-item` sets `display: block`, and the two rules weigh the
+   same — so the winner was decided by which came later in the file, and
+   `.menu-item` does. Measured in the compiled bundle: `display:flex` at byte
+   27352, `display:block` at 27753. The row was therefore never a flex
+   container, which made `flex: 1` and `min-width: 0` below inert and left the
+   name an INLINE span — and `overflow: hidden` does not apply to those, so it
+   ran past the button and under the × instead of ellipsising. A rule that has
+   to win is written to win rather than left to source order. */
+.menu-item.chapter-item {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  /* Same reason as .chapter-name, one level up: the row is itself a flex item
+     of .queue-row and has to be allowed to shrink. */
+  min-width: 0;
+}
+
+/* A column of timestamps, so the digits have to line up. (`float: right` from
+   .menu-item .hint does nothing here — the row is a flex container.) */
+.chapter-item .hint {
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* The row label, in both panels above. */
+.chapter-name {
+  flex: 1;
+  /* Without this the label never ellipsizes: a flex item's `min-width` is
+     `auto`, i.e. its content, so a long file name pushed the row wider than
+     the panel and the panel grew a horizontal scrollbar instead. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A removable row in a menu: the entry fills it, the × sits at the end and
+   appears on hover — a permanent one in every row would read as a list of
+   delete buttons. Two menus draw this, the play queue and the external
+   subtitles in the track menu, so it cannot live in either of them. `min-width:
+   0` on both the row and the entry is what lets the name ellipsize instead of
+   pushing the panel wider (see the note in CLAUDE.md). */
+.queue-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  /* Rows step aside while one is dragged over them. Not transitioned on the
+     dragged row itself — that one has to keep up with the finger. Harmless
+     where nothing drags. */
+  transition: transform 0.12s ease;
+  touch-action: none;
+}
+
+.queue-row .menu-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.queue-remove {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 2px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #8f8f9c;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.queue-remove svg {
+  width: 8px;
+  height: 8px;
+}
+
+.queue-row:hover .queue-remove,
+.queue-remove:focus-visible {
+  opacity: 1;
+}
+
+.queue-remove:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e8e8ec;
+}

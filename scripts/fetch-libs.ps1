@@ -1,0 +1,160 @@
+# Downloads every binary SDK the Windows build needs into src-tauri/:
+#   lib/     libmpv-2.dll (LGPL build), libmpv-wrapper.dll and the Vulkan loader
+#   ffmpeg/  the LGPL shared FFmpeg SDK, for the thumbnail and step sidecars
+#   tools/   libclang.dll, needed by bindgen when compiling ffmpeg-sys
+#
+# Run: powershell -ExecutionPolicy Bypass -File scripts/fetch-libs.ps1
+
+$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$libDir = Join-Path $repoRoot 'src-tauri\lib'
+$tmp = Join-Path $env:TEMP "velora-libs-$([guid]::NewGuid().ToString('n').Substring(0,8))"
+New-Item -ItemType Directory -Force $libDir | Out-Null
+New-Item -ItemType Directory -Force $tmp | Out-Null
+
+# GitHub allows an **unauthenticated** caller 60 API requests an hour, counted
+# per IP — and a hosted runner shares its address with every other build on that
+# machine, so the two lookups below routinely meet an allowance somebody else
+# has already spent. That is what "API rate limit exceeded for <address>" is,
+# and it is the one failure retrying cannot pass: the window is an hour wide and
+# the job has minutes. A token raises the limit to 1000 an hour per repository,
+# which a release run cannot come close to.
+#
+# In Actions the token exists with no setup and nothing to configure, so the fix
+# is simply to pass it in. Locally there is usually none and 60 an hour is ample
+# for one developer, so the header is added when a token is present rather than
+# being required — a checkout with no token still fetches.
+#
+# **Only the API calls carry it, never the asset downloads.** Those redirect to
+# a storage host which rejects a request bearing a GitHub Authorization header,
+# and PowerShell forwards headers across redirects — so authenticating a
+# download would break exactly what works today.
+function Get-GitHubHeaders {
+    $headers = @{ 'User-Agent' = 'velora-fetch-libs' }
+    $token = $env:GITHUB_TOKEN
+    if (-not $token) { $token = $env:GH_TOKEN }
+    if ($token) { $headers['Authorization'] = "Bearer $token" }
+    return $headers
+}
+
+# Retries what is worth retrying — a 5xx, a dropped connection — and refuses to
+# retry what is not. An exhausted allowance answers the same way for the rest of
+# the hour, so the useful thing to do with it is name it and say what raises it,
+# rather than spend three attempts proving it again.
+function Invoke-GitHubApi($url) {
+    $headers = Get-GitHubHeaders
+    $authed = $headers.ContainsKey('Authorization')
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            return Invoke-RestMethod $url -Headers $headers -UseBasicParsing
+        }
+        catch {
+            $err = $_
+            $limited = $false
+            $when = 'shortly'
+            # Defensive because this runs only on a failure path: a diagnosis
+            # that throws would replace the real error with its own.
+            try {
+                $resp = $err.Exception.Response
+                if ($resp) {
+                    $status = [int]$resp.StatusCode
+                    $left = $resp.Headers['X-RateLimit-Remaining']
+                    if (($status -eq 403 -or $status -eq 429) -and $left -eq '0') {
+                        $limited = $true
+                        $reset = $resp.Headers['X-RateLimit-Reset']
+                        if ($reset) {
+                            $at = [DateTimeOffset]::FromUnixTimeSeconds([int64]$reset)
+                            $when = $at.LocalDateTime.ToString('HH:mm:ss')
+                        }
+                    }
+                }
+            }
+            catch { }
+            if ($limited) {
+                if ($authed) {
+                    throw "GitHub API rate limit exceeded for $url, and a token was sent - so this is the repository's own 1000/hour allowance. It resets at $when."
+                }
+                $hint = 'This call was unauthenticated: 60 requests an hour, shared with everything else building from the same address. '
+                $hint += 'Set GITHUB_TOKEN to raise it to 1000; in GitHub Actions, pass ${{ secrets.GITHUB_TOKEN }} to the step that runs this script. '
+                throw "GitHub API rate limit exceeded for $url. $hint" + "The anonymous allowance resets at $when."
+            }
+            if ($attempt -eq 3) { throw $err }
+            Write-Host "  $url failed (attempt $attempt of 3), retrying..."
+            Start-Sleep -Seconds (3 * $attempt)
+        }
+    }
+}
+
+function Get-LatestAsset($repo, $pattern) {
+    $release = Invoke-GitHubApi "https://api.github.com/repos/$repo/releases/latest"
+    $asset = $release.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1
+    if ($null -eq $asset) { throw "Asset matching '$pattern' not found in $repo" }
+    return $asset.browser_download_url
+}
+
+Write-Host 'Downloading libmpv-wrapper (nini22P/libmpv-wrapper)...'
+$wrapperUrl = Get-LatestAsset 'nini22P/libmpv-wrapper' 'windows-x86_64\.zip$'
+$wrapperZip = Join-Path $tmp 'wrapper.zip'
+Invoke-WebRequest $wrapperUrl -OutFile $wrapperZip
+Expand-Archive $wrapperZip -DestinationPath (Join-Path $tmp 'wrapper')
+Copy-Item (Join-Path $tmp 'wrapper\bin\libmpv-wrapper.dll') $libDir -Force
+
+Write-Host 'Downloading libmpv-2.dll LGPL build (zhongfly/mpv-winbuild)...'
+# Plain x86_64, not the -v3 build: that one requires an AVX2-capable CPU.
+$mpvUrl = Get-LatestAsset 'zhongfly/mpv-winbuild' 'mpv-dev-lgpl-x86_64-\d.*\.7z$'
+$mpv7z = Join-Path $tmp 'mpvdev.7z'
+Invoke-WebRequest $mpvUrl -OutFile $mpv7z
+# bsdtar in System32 reads 7z archives.
+& "$env:SystemRoot\System32\tar.exe" -xf $mpv7z -C $tmp
+Copy-Item (Join-Path $tmp 'libmpv-2.dll') $libDir -Force
+
+Write-Host 'Downloading the Vulkan loader (LunarG Vulkan Runtime)...'
+# libmpv-2.dll imports vulkan-1.dll directly, and Windows does not ship it — a
+# GPU driver does. Without it libmpv cannot be loaded at all, although mpv draws
+# through D3D11 here. The bundled copy is a fallback: libmpv_load.rs uses the
+# system's loader whenever there is one, which is why it goes to lib\ and not
+# beside the executable, where it would always win.
+$vkZip = Join-Path $tmp 'vulkan-rt.zip'
+Invoke-WebRequest 'https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-runtime-components.zip' -OutFile $vkZip
+$vkDir = Join-Path $tmp 'vulkan-rt'
+New-Item -ItemType Directory -Force $vkDir | Out-Null
+& "$env:SystemRoot\System32\tar.exe" -xf $vkZip -C $vkDir
+$vkDll = Get-ChildItem $vkDir -Recurse -Filter 'vulkan-1.dll' | Where-Object { $_.Directory.Name -eq 'x64' } | Select-Object -First 1
+if ($null -eq $vkDll) { throw 'x64\vulkan-1.dll not found in the Vulkan Runtime archive' }
+# A loader from anywhere but LunarG would be a DLL in every process that plays
+# a video, so its Authenticode signature is checked rather than trusted.
+$sig = Get-AuthenticodeSignature $vkDll.FullName
+if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'LunarG') {
+    throw "vulkan-1.dll is not validly signed by LunarG ($($sig.Status): $($sig.SignerCertificate.Subject))"
+}
+Copy-Item $vkDll.FullName $libDir -Force
+
+Write-Host 'Downloading FFmpeg LGPL shared SDK (BtbN/FFmpeg-Builds, for the sidecars)...'
+$ffDir = Join-Path $repoRoot 'src-tauri\ffmpeg'
+$ffZip = Join-Path $tmp 'ffmpeg-shared.zip'
+Invoke-WebRequest 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip' -OutFile $ffZip
+& "$env:SystemRoot\System32\tar.exe" -xf $ffZip -C $tmp
+$ffSrc = Get-ChildItem $tmp -Directory | Where-Object { $_.Name -like 'ffmpeg-n*shared*' } | Select-Object -First 1
+New-Item -ItemType Directory -Force $ffDir | Out-Null
+foreach ($d in 'bin', 'include', 'lib') {
+    Copy-Item (Join-Path $ffSrc.FullName $d) $ffDir -Recurse -Force
+}
+
+Write-Host 'Downloading libclang (bindgen needs it to compile ffmpeg-sys)...'
+$toolsDir = Join-Path $repoRoot 'src-tauri\tools'
+New-Item -ItemType Directory -Force $toolsDir | Out-Null
+$whlInfo = Invoke-RestMethod 'https://pypi.org/pypi/libclang/json'
+$whlUrl = ($whlInfo.urls | Where-Object { $_.filename -like '*win_amd64*' } | Select-Object -First 1).url
+$whl = Join-Path $tmp 'libclang.whl'
+Invoke-WebRequest $whlUrl -OutFile $whl
+$whlDir = Join-Path $tmp 'libclang'
+New-Item -ItemType Directory -Force $whlDir | Out-Null
+& "$env:SystemRoot\System32\tar.exe" -xf $whl -C $whlDir
+$dll = Get-ChildItem $whlDir -Recurse -Filter 'libclang.dll' | Select-Object -First 1
+Copy-Item $dll.FullName $toolsDir -Force
+
+Remove-Item -Recurse -Force $tmp
+Write-Host "Done."
+Write-Host "  libmpv:  $libDir"
+Write-Host "  ffmpeg:  $ffDir"
+Write-Host "  tools:   $toolsDir"

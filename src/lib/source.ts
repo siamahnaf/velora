@@ -1,0 +1,227 @@
+/**
+ * What a source *is*, as opposed to how the player currently reaches it.
+ *
+ * Everything the player remembers about a video — the watch position, the
+ * chosen tracks, the poster — is filed under a key, and until now that key was
+ * the path. A path is a fine key for a file and a poor one for anything else:
+ *
+ * - the same YouTube video arrives as `youtu.be/ID?si=<tracking>` from a share
+ *   button and as `youtube.com/watch?v=ID` from the address bar, and those
+ *   would be two unrelated entries;
+ * - a torrent stream (ROADMAP 21) is served from `http://127.0.0.1:<port>/…`,
+ *   and **the port changes every run** — so a key taken from the transport
+ *   would forget the file between sessions, every time.
+ *
+ * So the identity comes from what is being watched, and the record keeps the
+ * openable source next to it. A local path is its own identity, which is what
+ * keeps every entry ever written still readable: `sourceId('/a/b.mkv')` is
+ * `/a/b.mkv`, so there is nothing to migrate.
+ */
+
+import { isNetworkSource } from './player.svelte';
+
+/**
+ * Query parameters that identify the *visit* rather than the video.
+ *
+ * Only ones that are unambiguously tracking: `t`/`start` (a timestamp) and
+ * `list` (playlist context) are left alone, because dropping them would be a
+ * guess about what the viewer meant rather than a fact about the video.
+ */
+const TRACKING_PARAMS = new Set([
+  'si',
+  'pp',
+  'feature',
+  'ab_channel',
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_term',
+  'utm_content',
+  'fbclid',
+  'gclid',
+  'igshid',
+]);
+
+/**
+ * A file on this machine's disk, addressed by an absolute path.
+ *
+ * Narrower than `!isNetworkSource`, and on purpose: that one answers "does
+ * reading this cost bandwidth", while this answers "is there a file here that
+ * the player may act on" — so every scheme mpv understands counts against it,
+ * `edl://`, `av://`, `dvd://` and `memory://` included, not only the network
+ * ones. A torrent is covered twice over: it plays from a loopback URL, and its
+ * data belongs to the torrent store, never to a key in the player.
+ * `C:\…` is a path and not a scheme, which is why a scheme is two letters or
+ * more.
+ */
+export function isLocalFile(path: string | null): boolean {
+  if (!path || isNetworkSource(path)) return false;
+  if (/^[a-z][a-z0-9+.-]+:/i.test(path)) return false;
+  return path.startsWith('/') || /^[a-z]:[\\/]/i.test(path) || path.startsWith('\\\\');
+}
+
+/**
+ * Something to hand the torrent client rather than mpv.
+ *
+ * A magnet, or a link to a `.torrent` file — the two forms a torrent arrives in.
+ * Both go into the same "Open link…" box as a YouTube URL and are dispatched by
+ * shape, which is the entry point the roadmap called for: the viewer has a link,
+ * and which protocol it needs is the player's problem.
+ */
+export function isTorrentLink(src: string): boolean {
+  const s = src.trim();
+  return isMagnet(s) || /\.torrent(?:[?#]|$)/i.test(s);
+}
+
+export function isMagnet(src: string): boolean {
+  return /^magnet:/i.test(src.trim());
+}
+
+/**
+ * How to find this torrent again, once it has been opened once.
+ *
+ * A magnet built from what came back, and it exists because the two *other*
+ * ways in do not survive: a `.torrent` file is a path that can be moved or
+ * deleted, and a `.torrent` URL is a page that can go down — while the info
+ * hash names the torrent for as long as BitTorrent exists, and the metadata
+ * cache beside it (torrent.rs) means reopening one costs no lookup at all.
+ * So everything remembered about a torrent is keyed by this rather than by
+ * whatever the viewer happened to hand over.
+ *
+ * The `dn` is a display name and nothing more — it is what keeps a recents row
+ * readable, and it is exactly what a tracker's own magnet carries.
+ *
+ * **Trackers are optional and are for the magnet that leaves this machine.**
+ * Everything remembered here reopens against the metadata cached beside the
+ * data, so locally the bare hash is enough and the callers that store one pass
+ * nothing — which also keeps a magnet built today identical to one built last
+ * year, so the recents list does not grow a second row for the same torrent.
+ * What needs them is `contentOf`: a guest handed a hash and no trackers has the
+ * DHT and nothing else, and on a network that filters UDP that is the whole
+ * difference between resolving and timing out.
+ */
+export function magnetFor(
+  infoHash: string,
+  name?: string | null,
+  trackers?: readonly string[],
+): string {
+  const dn = name ? `&dn=${encodeURIComponent(name)}` : '';
+  const tr = (trackers ?? []).map((t) => `&tr=${encodeURIComponent(t)}`).join('');
+  return `magnet:?xt=urn:btih:${infoHash}${dn}${tr}`;
+}
+
+/**
+ * Whether a SOCKS5 address can possibly work.
+ *
+ * A shape check and nothing more, for the settings field to answer before the
+ * session does. Whether the proxy is *running* cannot be known without trying
+ * it, and the place that tries it is librqbit — which refuses to build a
+ * session and says what it could not parse. What this catches is the value that
+ * could never work: `http://…` and `socks5h://…` are what people paste out of
+ * habit, and librqbit takes the one scheme. Empty is valid and means no proxy.
+ */
+export function proxyLooksValid(url: string): boolean {
+  const v = url.trim();
+  if (!v) return true;
+  // Optional `user:password@`, a host with no scheme decoration left in it, and
+  // a port — which librqbit requires rather than defaulting (`missing port`).
+  const m = /^socks5:\/\/(?:[^@/]*@)?([^@/:]+):(\d{1,5})$/.exec(v);
+  return !!m && Number(m[2]) > 0 && Number(m[2]) <= 65535;
+}
+
+/**
+ * A torrent stream served by our own local server, taken apart.
+ *
+ * The route is `http://127.0.0.1:<port>/t/<infohash>/<index>/<name>` (torrent.rs
+ * builds it, `stream_url`), and the shape exists so that the identity can be
+ * read straight back out of the URL: the info hash says *which torrent* and the
+ * index says *which file in it*, while the port — the one part that changes
+ * every run — is not needed at all. Recovering it from the string rather than
+ * keeping a table beside the player means there is nothing to fall out of sync,
+ * and a position recorded today still reads tomorrow on a different port.
+ *
+ * The host check is deliberately narrow. Anything on loopback answering `/t/…`
+ * that is not ours would be misfiled under a torrent id, and 127.0.0.1 is where
+ * every local development server in the world lives.
+ */
+export function parseTorrentUrl(src: string): { infoHash: string; index: number } | null {
+  const match = /^https?:\/\/127\.0\.0\.1:\d+\/t\/([0-9a-f]{40})\/(\d+)(?:\/|$)/i.exec(src.trim());
+  if (!match) return null;
+  return { infoHash: match[1].toLowerCase(), index: Number(match[2]) };
+}
+
+/**
+ * How much of what has already played mpv keeps in memory for seeking back,
+ * by where the bytes come from (`demuxer-max-back-bytes`).
+ *
+ * The buffer only exists while mpv's demuxer cache is on, which it is for a
+ * network source and not for a local file — and a torrent is a network source
+ * to mpv, because it reads one from our loopback server. Measured on a 4K
+ * stream at 17.8 Mbit/s over loopback HTTP: 512 MiB here put **~580 MB** on the
+ * player within five minutes of playback (mpv alone: 1287 → 1865 MB), all of it
+ * bytes that a torrent already has on disk, so seeking back over them costs a
+ * local read. Only a stream that really comes from elsewhere — a link, a page
+ * yt-dlp resolves — is worth the memory, since seeking back there downloads
+ * again. Everything else gets mpv's own default.
+ *
+ * Applied on every `path` change rather than once per verb, because mpv takes
+ * a new value **live**, against the demuxer already running (measured: 278 →
+ * 207 MB of cache within the next second of setting it), so the playlist
+ * advancing by itself is covered by the same line.
+ */
+export function backBufferFor(path: string | null): string {
+  return isNetworkSource(path) && !parseTorrentUrl(path ?? '') ? '512MiB' : '50MiB';
+}
+
+/** `torrent:<infohash>/<index>` — see `parseTorrentUrl`. */
+export function torrentId(infoHash: string, index: number): string {
+  return `torrent:${infoHash.toLowerCase()}/${index}`;
+}
+
+/**
+ * The scope every episode of one torrent shares: `torrent:<infohash>/`.
+ *
+ * Two things are the same string here, and keeping them one expression is the
+ * point rather than a tidiness. It is the folder key the remembered-track store
+ * files a season's dub under (`folderScopeKey`), and it is the prefix
+ * `purgeTorrentHistory` matches an episode id against — so forgetting a torrent
+ * reaches that dub for free, and the day the two are spelled apart the leak is
+ * silent: a purge that misses one store looks exactly like one that worked.
+ */
+export function torrentFolderKey(infoHash: string): string {
+  return `torrent:${infoHash.toLowerCase()}/`;
+}
+
+/**
+ * A stable key for a source.
+ *
+ * Local paths pass through untouched. A URL is canonicalised: the scheme and
+ * host are lower-cased (they are case-insensitive, the path is not), the
+ * fragment goes (it addresses a place *within* a page, not a different video),
+ * tracking parameters go, and what remains is sorted — otherwise the same link
+ * with its parameters in another order files itself twice.
+ *
+ * A torrent stream is the case the whole indirection was built for: its URL is
+ * `http://127.0.0.1:<port>/…` and **the port changes every run**, so a key taken
+ * from the transport would forget the film every session.
+ */
+export function sourceId(src: string): string {
+  const torrent = parseTorrentUrl(src);
+  if (torrent) return torrentId(torrent.infoHash, torrent.index);
+  if (!isNetworkSource(src)) return src;
+  try {
+    const url = new URL(src.trim());
+    url.hash = '';
+    url.protocol = url.protocol.toLowerCase();
+    url.hostname = url.hostname.toLowerCase();
+    for (const name of [...url.searchParams.keys()]) {
+      if (TRACKING_PARAMS.has(name.toLowerCase())) url.searchParams.delete(name);
+    }
+    url.searchParams.sort();
+    // A trailing "?" left by deleting the last parameter is noise in a key.
+    return url.toString().replace(/\?$/, '');
+  } catch {
+    // Not parseable as a URL — better an imperfect key than none.
+    return src.trim();
+  }
+}

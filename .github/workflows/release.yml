@@ -1,0 +1,179 @@
+name: Release
+
+# Pushing a tag like `v1.3.0` builds the Windows installer, signs it and the
+# in-place update payload, and publishes both on a GitHub release together with
+# `latest.json` — the manifest every installed copy reads from
+# https://github.com/<owner>/<repo>/releases/latest/download/latest.json
+# (`plugins.updater.endpoints` in src-tauri/tauri.conf.json).
+#
+# Secrets:
+#   TAURI_SIGNING_PRIVATE_KEY           required — `bun tauri signer generate`;
+#                                       its public half is `plugins.updater.pubkey`
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  the key's password, if it has one
+#   VELORA_OPENSUBTITLES_KEY            optional — subtitle search is disabled
+#                                       in a build without it
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The tag names the release and tauri.conf.json names the build; a
+      # mismatch would publish an installer that announces itself as another
+      # version, and every client would offer it again forever.
+      - name: Tag matches the version
+        id: version
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $tag = "${{ github.ref_name }}"
+          if ($tag -ne "v$version") {
+            Write-Error "tag $tag does not match tauri.conf.json version $version (expected v$version)"
+            exit 1
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Setup toolchain
+        uses: moonrepo/setup-toolchain@v0
+        with:
+          # Node and bun at exactly the versions `.prototools` pins.
+          auto-install: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # libmpv, libmpv-wrapper, the FFmpeg SDK and libclang. Cached on the
+      # script's hash, so the download only runs when the script changed.
+      - name: Cache native SDKs
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/lib
+            src-tauri/ffmpeg
+            src-tauri/tools
+          key: native-sdks-${{ runner.os }}-${{ hashFiles('scripts/fetch-libs.ps1') }}
+
+      # Authenticated: the anonymous GitHub API allowance is per IP, and a
+      # hosted runner shares its address with everybody else's builds.
+      - name: Fetch native SDKs
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: powershell -ExecutionPolicy Bypass -File scripts/fetch-libs.ps1
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Notices are current
+        run: node scripts/gen-notices.mjs --check
+
+      - name: Build
+        run: bun run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VELORA_OPENSUBTITLES_KEY: ${{ secrets.VELORA_OPENSUBTITLES_KEY }}
+
+      # The in-place payload (`windows-x86_64-zip`, see update.rs) and the
+      # portable download. A failure here costs the release its in-place path
+      # only: clients fall back to the installer, which is always published.
+      - name: Pack the in-place update and the portable download
+        continue-on-error: true
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $out = Join-Path $env:RUNNER_TEMP 'zip'
+          # Windows PowerShell 5.1, the shell the script is developed under.
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack-windows-update.ps1 -Version $version -OutDir $out
+          if ($LASTEXITCODE -ne 0) { Write-Error "packing the payload failed with $LASTEXITCODE" }
+          $zip = Join-Path $out "Velora_${version}_x64.zip"
+          if (-not (Test-Path $zip)) { Write-Error "no payload at $zip" }
+          bun run tauri signer sign $zip
+          if (-not (Test-Path "$zip.sig")) { Write-Error "the payload was not signed" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item $zip dist/
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack-windows-update.ps1 -Version $version -OutDir $out -Portable
+          if ($LASTEXITCODE -ne 0) { Write-Error "packing the portable download failed with $LASTEXITCODE" }
+          $portable = Join-Path $out "Velora_${version}_x64-portable.zip"
+          if (-not (Test-Path $portable)) { Write-Error "no portable download at $portable" }
+          Copy-Item $portable dist/
+
+      - name: Stage the installer and write latest.json
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $exe = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if (-not $exe) { Write-Error "no installer was built"; exit 1 }
+          # Space-free name, so the manifest's URLs need no escaping.
+          $name = "Velora_${version}_x64-setup.exe"
+          Copy-Item $exe.FullName "dist/$name"
+          $sigFile = "$($exe.FullName).sig"
+          if (-not (Test-Path $sigFile)) { Write-Error "the installer was not signed — is TAURI_SIGNING_PRIVATE_KEY set?"; exit 1 }
+          $base = "https://github.com/${{ github.repository }}/releases/download/v$version"
+          $platforms = [ordered]@{
+            'windows-x86_64' = [ordered]@{ signature = (Get-Content $sigFile -Raw).Trim(); url = "$base/$name" }
+          }
+          # Second rather than instead: the installer key is what update.rs
+          # falls back to when the swap cannot be used.
+          $zipName = "Velora_${version}_x64.zip"
+          $zipSig = Join-Path $env:RUNNER_TEMP "zip/$zipName.sig"
+          if ((Test-Path $zipSig) -and (Test-Path "dist/$zipName")) {
+            $platforms['windows-x86_64-zip'] = [ordered]@{ signature = (Get-Content $zipSig -Raw).Trim(); url = "$base/$zipName" }
+          } else {
+            Write-Output "::warning::no signed in-place payload - this release updates through the installer only"
+          }
+          # `notes` is what the update button's tooltip shows.
+          $notes = ''
+          if (Test-Path "changelog/$version.md") {
+            $notes = (node scripts/changelog.mjs notes $version) -join "`n"
+          } else {
+            Write-Output "::warning::changelog/$version.md is missing; the release goes out without notes"
+          }
+          $notes | Set-Content (Join-Path $env:RUNNER_TEMP 'notes.md') -Encoding utf8
+          [ordered]@{
+            version   = $version
+            notes     = $notes
+            pub_date  = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            platforms = $platforms
+          } | ConvertTo-Json -Depth 5 | Set-Content dist/latest.json -Encoding utf8
+          Get-Content dist/latest.json
+          Get-ChildItem dist
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Velora ${{ github.ref_name }}
+          body_path: ${{ runner.temp }}/notes.md
+          files: |
+            dist/*.exe
+            dist/*.zip
+            dist/latest.json

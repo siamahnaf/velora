@@ -1,0 +1,499 @@
+<script lang="ts">
+  /// The audio and subtitle track menus. They share their whole body — the list
+  /// plus the delay stepper — which the chapter menu does not, so one component
+  /// serves both and `kind` narrows it.
+  import { t } from '$lib/i18n.svelte';
+  import { playback } from '$lib/playback.svelte';
+  import { nudgeDeviceOffset, output, setDeviceOffset } from '$lib/audio-output.svelte';
+  import { delayIsZero, formatDelay, player, type Track } from '$lib/player.svelte';
+  import { SUB_SPEED_PRESETS, isPreset, isUnitSpeed, presetFactor } from '$lib/sub-speed';
+  import { openSubsDialog, removeSubtitle } from '$lib/subs.svelte';
+  import { SUB_SCALE, readSubScale, setSubScale, subScale } from '$lib/sub-scale.svelte';
+  import {
+    audioMix,
+    fileDelay,
+    formatFps,
+    presetLabel,
+    setAudioMulti,
+    setSubSpeedHere,
+    subSpeedLabel,
+    toggleMixTrack,
+  } from '$lib/tracks.svelte';
+  import MenuBack from './MenuBack.svelte';
+  import MenuBody from './MenuBody.svelte';
+
+  /// One press of the stepper. Matches mpv's own default sub-delay granularity.
+  const DELAY_STEP = 0.1;
+  /// Finer than a file's: a speaker's lag is tuned against lips, to a frame or so.
+  const DEVICE_STEP = 0.05;
+
+  interface Props {
+    kind: 'audio' | 'sub';
+    close: () => void;
+    onSelect: (kind: 'audio' | 'sub', track: Track | null) => void;
+    onAddFile: (kind: 'sub' | 'audio') => void;
+    onNudgeDelay: (kind: 'sub' | 'audio', delta: number) => void;
+    onResetDelay: (kind: 'sub' | 'audio') => void;
+  }
+
+  let {
+    kind,
+    close,
+    onSelect,
+    onAddFile,
+    onNudgeDelay,
+    onResetDelay,
+  }: Props = $props();
+
+  /// Several audio tracks can play at once — see "Several audio tracks at once"
+  /// in tracks.svelte.ts. The switch is offered only where there is something
+  /// to mix and something to mix it with.
+  const canMulti = $derived(kind === 'audio' && player.audioTracks.length > 1 && playback.can.audioMix);
+  /// Ticks instead of a single choice. The ticks are ours rather than mpv's
+  /// `selected`: with every track in the graph, mpv calls all of them
+  /// selected (see tracks.svelte.ts).
+  const multi = $derived(kind === 'audio' && audioMix.multi);
+  const mixCount = $derived(multi ? audioMix.ticked.length : 0);
+
+  /// The settings sheet may have moved the size since this menu last opened.
+  $effect(() => {
+    if (kind === 'sub') void readSubScale();
+  });
+  const scaleProgress = $derived(
+    ((subScale.value - SUB_SCALE.min) / (SUB_SCALE.max - SUB_SCALE.min)) * 100,
+  );
+</script>
+
+<div class="menu">
+  <MenuBody>
+    <MenuBack />
+    <div class="menu-title" class:counted={mixCount > 1}>
+      <span>{t(kind === 'audio' ? 'osc.audio' : 'osc.subs')}</span>
+      {#if mixCount > 1}
+        <span class="mix-count">{t('osc.audio_count', { n: mixCount, total: player.audioTracks.length })}</span>
+      {/if}
+    </div>
+    <!-- Over DLNA the file went across with all its tracks and the choice
+         belongs to the television — its renderer declares no action for
+         audio at all (it has vendor ones for subtitles and 3D, so the
+         absence is a decision, not a gap). The list would otherwise keep
+         showing this player's selection, which is a claim we cannot back:
+         a switch made on the TV's own remote never reaches us. -->
+    {#if !playback.can.trackChoice}
+      <div class="cast-hint">{t('cast.tracks_on_tv')}</div>
+    {/if}
+    {#each kind === 'audio' ? player.audioTracks : player.subTracks as track (track.id)}
+      <!-- The × appears for external subtitle tracks only. An embedded one
+           cannot be removed without rewriting the video file, and mpv's
+           `sub-remove` refuses it too. -->
+      {#if kind === 'sub' && track.external}
+        <div class="queue-row">
+          <button
+            class="menu-item chapter-item"
+            class:sel={track.selected}
+            data-tip={track.label}
+            onclick={() => onSelect('sub', track)}
+          >
+            <span class="chapter-name">{track.label}</span>
+          </button>
+          <button
+            class="queue-remove"
+            data-tip={t('osc.sub_remove')}
+            aria-label={t('osc.sub_remove')}
+            onclick={() => void removeSubtitle(track)}
+          >
+            <svg viewBox="0 0 10 10" aria-hidden="true">
+              <path stroke="currentColor" stroke-width="1.4" stroke-linecap="round" d="M1.2 1.2l7.6 7.6M8.8 1.2l-7.6 7.6"/>
+            </svg>
+          </button>
+        </div>
+      {:else if multi}
+        <!-- Stays open on click, like the delay: a mix is put together by
+             ticking several rows while listening to the result. -->
+        {@const heard = audioMix.ticked.includes(track.id)}
+        <button
+          class="menu-item mix-item"
+          class:sel={heard}
+          role="menuitemcheckbox"
+          aria-checked={heard}
+          onclick={() => void toggleMixTrack(track)}
+        >
+          <span class="mix-check" class:on={heard} aria-hidden="true">
+            <svg viewBox="0 0 10 10"><path d="M1.8 5.2l2.2 2.2 4.2-4.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <span class="mix-name">{track.label}</span>
+        </button>
+      {:else}
+        <button class="menu-item" class:sel={track.selected} onclick={() => onSelect(kind!, track)}>
+          {track.label}
+        </button>
+      {/if}
+    {/each}
+    {#if kind === 'sub'}
+      <button
+        class="menu-item"
+        class:sel={!player.subTracks.some((track) => track.selected)}
+        onclick={() => onSelect('sub', null)}
+      >
+        {t('osc.subs_off')}
+      </button>
+    {/if}
+    <button class="menu-item" onclick={() => onAddFile(kind!)}>
+      {t('osc.add_file')}
+    </button>
+    {#if canMulti}
+      <div class="menu-sep"></div>
+      <!-- A mode, not an action: it changes what a click on a track does and
+           nothing that is heard, so it stays open and is drawn as a switch.
+           No hint line under it: the menu is anchored by its bottom edge, and
+           a line appearing below the switch would move it out from under the
+           cursor that just clicked it (the delay reset's rule). The ticks and
+           the count in the title say what the mode is. -->
+      <button
+        class="menu-item multi-row"
+        role="menuitemcheckbox"
+        aria-checked={multi}
+        onclick={() => void setAudioMulti(!multi)}
+      >
+        <span class="mix-name">{t('osc.audio_multi')}</span>
+        <span class="mini-switch" class:on={multi} aria-hidden="true"></span>
+      </button>
+    {/if}
+    {#if kind === 'sub'}
+      <button class="menu-item" onclick={() => { close(); void openSubsDialog(); }}>
+        {t('subs.find')}
+      </button>
+      <div class="menu-sep"></div>
+      <div class="menu-title">{t('vset.sub_scale')}</div>
+      <!-- Stays open while dragged, like the delay: a size is judged against
+           the line on screen. Double-click goes back to mpv's default. -->
+      <div class="scalerow">
+        <input
+          type="range"
+          min={SUB_SCALE.min}
+          max={SUB_SCALE.max}
+          step={SUB_SCALE.step}
+          value={subScale.value}
+          style="--progress: {scaleProgress}%"
+          aria-label={t('vset.sub_scale')}
+          oninput={(e) => setSubScale(Number(e.currentTarget.value))}
+          onchange={(e) => e.currentTarget.blur()}
+          ondblclick={() => setSubScale(SUB_SCALE.default)}
+        />
+        <span class="scaleval">{subScale.value.toFixed(SUB_SCALE.decimals)}×</span>
+      </div>
+    {/if}
+    <div class="menu-sep"></div>
+    <!-- With the device's row below it, "delay" alone would not say whose this
+         one is. -->
+    <div class="menu-title">
+      {kind === 'audio' && output.name ? t('osc.delay_file') : t('osc.delay')}
+    </div>
+    <!-- Stays open on click: a delay is dialled in by repeated nudges while
+         watching the result, not chosen once from a list. -->
+    <div class="delayrow">
+      <button class="speedopt" aria-label="-0.1" onclick={() => onNudgeDelay(kind!, -DELAY_STEP)}>−</button>
+      <span class="delayval">{formatDelay(fileDelay(kind!))}</span>
+      <button class="speedopt" aria-label="+0.1" onclick={() => onNudgeDelay(kind!, DELAY_STEP)}>+</button>
+      <span class="delaysep"></span>
+      <!-- Always rendered, only disabled: the menu is anchored by its bottom
+           edge, so a control appearing here would move the −/+ row the moment the
+           delay leaves zero — right under the cursor that is clicking it. -->
+      <button
+        class="speedopt delayreset"
+        disabled={delayIsZero(fileDelay(kind!))}
+        onclick={() => onResetDelay(kind!)}
+      >
+        {t('osc.delay_reset')}
+      </button>
+    </div>
+    {#if kind === 'audio' && output.name}
+      <!-- The output device's own lag, kept for that device rather than for
+           this file — see audio-output.svelte.ts. -->
+      <div
+        class="menu-title device-title"
+        data-tip={t('osc.device_offset_tip')}
+        aria-label={t('osc.device_offset_tip')}
+      >
+        {t('osc.device_offset', { device: output.name })}
+      </div>
+      <div class="delayrow">
+        <button class="speedopt" aria-label="-0.05" onclick={() => nudgeDeviceOffset(-DEVICE_STEP)}>−</button>
+        <span class="delayval">{formatDelay(output.offset)}</span>
+        <button class="speedopt" aria-label="+0.05" onclick={() => nudgeDeviceOffset(DEVICE_STEP)}>+</button>
+        <span class="delaysep"></span>
+        <button
+          class="speedopt delayreset"
+          disabled={delayIsZero(output.offset)}
+          onclick={() => setDeviceOffset(0)}
+        >
+          {t('osc.delay_reset')}
+        </button>
+      </div>
+    {/if}
+    {#if kind === 'sub'}
+      <!-- The manual half of fitting a subtitle to the video's frame rate, for
+           when nobody told us the subtitle's: an external file, an embedded
+           track. A search result that knows its rate asks by itself (see
+           `fpsOffer`). A list rather than pills: three "25 → 23.976" labels
+           do not fit a 256px row, and a ticked list is how this menu already
+           picks one of several. Stays open, like the delay — the choice is
+           judged by watching the next line land. -->
+      <div class="menu-sep"></div>
+      <div class="menu-title">{t('osc.sub_speed')}</div>
+      <button
+        class="menu-item"
+        class:sel={isUnitSpeed(player.subSpeed)}
+        onclick={() => setSubSpeedHere(1)}
+      >
+        {t('osc.sub_speed_off')}
+      </button>
+      {#each SUB_SPEED_PRESETS as preset (presetFactor(preset))}
+        <button
+          class="menu-item"
+          class:sel={isPreset(player.subSpeed, preset)}
+          data-tip={t('osc.sub_speed_tip', { from: formatFps(preset.from), to: formatFps(preset.to) })}
+          onclick={() => setSubSpeedHere(presetFactor(preset))}
+        >
+          {presetLabel(preset)}
+        </button>
+      {/each}
+      <!-- A factor that is none of the above — fitted from a search result with
+           an unusual pair, or set in mpv.conf — is still shown, or the list
+           would claim nothing is in force. -->
+      {#if !isUnitSpeed(player.subSpeed) && !SUB_SPEED_PRESETS.some((p) => isPreset(player.subSpeed, p))}
+        <div class="menu-item sel">{subSpeedLabel(player.subSpeed)}</div>
+      {/if}
+    {/if}
+  </MenuBody>
+</div>
+
+<style>
+  /* A speaker's name is the system's and can be long ("Колонка JBL Flip 5
+     (Hands-Free)"); it is cut rather than allowed to widen the panel. */
+  .device-title {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Delay stepper: the same pill row as the speed presets, because it is the
+     same job — a compact group of small actions. The value between them is a
+     readout, not a control, so it stays plain text rather than a third pill.
+
+     Reset is *inside* the row rather than a `.menu-item` below it, and the
+     reason is what hover exposed: a menu row is full-bleed and indented to line
+     its text up with the list, so next to a 6px-inset pill its highlight was a
+     different width and started at a different place — two shapes for one
+     setting. In the row it is a fourth cell of the same control, and the
+     divider is what says it belongs to the group without belonging to the
+     stepper. */
+  .menu-title.counted {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  /* Not uppercase: it is a reading, not a heading, and the accent says it is
+     the state of the list below rather than a label for it. */
+  .mix-count {
+    text-transform: none;
+    letter-spacing: 0;
+    color: #4cb4ff;
+  }
+
+  /* Two classes against `.menu-item`'s one, so its `display: block` cannot win
+     by source order (the queue rows lost theirs that way). */
+  .menu-item.mix-item,
+  .menu-item.multi-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .mix-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Both the box and the switch are taller than a 13px line, and a row that
+     grows by their difference moved the whole list the moment the mode came
+     on. The negative margins hand the difference back: they are drawn at
+     their size and laid out at the text's. */
+  .mix-check {
+    margin-block: -4px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid rgba(255, 255, 255, 0.35);
+    border-radius: 4px;
+    color: #fff;
+  }
+
+  .mix-check svg {
+    width: 10px;
+    height: 10px;
+    opacity: 0;
+  }
+
+  .mix-check.on {
+    background: #1e88ff;
+    border-color: #1e88ff;
+  }
+
+  .mix-check.on svg {
+    opacity: 1;
+  }
+
+  .mix-item:hover .mix-check:not(.on) {
+    border-color: rgba(255, 255, 255, 0.6);
+  }
+
+  /* The settings sheet's switch at menu-row size: 30×18 against 38×22, so it
+     sits inside a 13px row without making it taller. */
+  .mini-switch {
+    margin-block: -4px;
+    flex: none;
+    position: relative;
+    width: 30px;
+    height: 18px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.16);
+  }
+
+  .mini-switch.on {
+    background: #1e88ff;
+  }
+
+  .mini-switch::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.15s ease;
+  }
+
+  .mini-switch.on::after {
+    transform: translateX(12px);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mini-switch::after {
+      transition: none;
+    }
+  }
+
+  /* Subtitle size: the delay row's inset and pill, holding a slider and its
+     readout instead of the stepper. */
+  .scalerow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 2px 8px 6px;
+    padding: 0 12px;
+    height: 37px;
+    background: rgba(255, 255, 255, 0.07);
+    border-radius: 11px;
+  }
+
+  .scalerow input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .scaleval {
+    flex: 0 0 auto;
+    min-width: 40px;
+    text-align: right;
+    color: #e8e8ec;
+    font-size: 12px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .delayrow {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin: 2px 8px 6px;
+    /* 5px and 11px: the concentric rule against `.speedopt`'s 6px, and the same
+       numbers as `.speedrow` — see the note there. */
+    padding: 5px;
+    background: rgba(255, 255, 255, 0.07);
+    border-radius: 11px;
+  }
+
+  .delayval {
+    flex: 1;
+    text-align: center;
+    color: #e8e8ec;
+    font-size: 12px;
+    /* Tabular figures: the value changes under the cursor, and proportional
+       digits make the whole row twitch sideways with every nudge. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  .delayrow .speedopt {
+    flex: 0 0 34px;
+    font-size: 15px;
+    line-height: 1;
+  }
+
+  /* A hairline, not a gap: the stepper and the reset are one control and two
+     jobs, which is exactly what a divider says. Inset top and bottom so it
+     reads as a rule between cells rather than a border of the row. */
+  .delaysep {
+    flex: 0 0 1px;
+    align-self: stretch;
+    margin: 3px 5px;
+    background: rgba(255, 255, 255, 0.14);
+  }
+
+  /* Wider than the two glyph buttons because it holds a word, and at the list's
+     own size — it is text, not a symbol. `auto` rather than a fixed width so
+     "Сброс" and "Reset" each take what they need.
+
+     One word, not a sentence: the label was `Сбросить задержку`, which is right
+     for a menu row and wrong for a cell — the noun is already on the section
+     title above, and at 75px the word squeezed the readout hard enough to wrap
+     the unit onto a second line. Measured in the built stylesheet.
+
+     `align-self: stretch` is the other half of the shape. Writing `padding: 0
+     10px` for the horizontal inset silently took the vertical padding to zero,
+     so this cell was **12px tall inside a 27px row** — the long thin pill. It
+     now fills the row's content height like the two glyph buttons, and the text
+     is centered by the grid rather than by a padding that has to be kept in step
+     with theirs. */
+  .delayrow .speedopt.delayreset {
+    flex: 0 0 auto;
+    align-self: stretch;
+    display: grid;
+    place-items: center;
+    padding: 0 12px;
+    font-size: 12px;
+  }
+
+  /* The readout may not wrap: it is the one part of the row whose width is not
+     ours to choose, and a second line would grow the whole control. */
+  .delayval {
+    white-space: nowrap;
+  }
+
+  .delayrow .speedopt:disabled {
+    color: #6a6a74;
+    cursor: default;
+  }
+
+  .delayrow .speedopt:disabled:hover {
+    background: transparent;
+  }
+</style>

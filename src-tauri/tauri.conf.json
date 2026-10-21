@@ -1,0 +1,66 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Velora",
+  "version": "1.3.0",
+  "identifier": "app.velora",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://github.com/siamahnaf/velora/releases/latest/download/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE0NUE3OUM0MzVEQTZDOUUKUldTZWJObzF4SGxhcEUyWmo5NjFRWFNKcHhPTXVsMDgxTU1WTVRBSSsyOFc5NzFlSlRURlo1c2MK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "publisher": "Velora",
+    "copyright": "Velora is based on GPL-3.0 work, copyright © 2026 Evgenii Zakharov",
+    "category": "Video",
+    "shortDescription": "Velora video player",
+    "longDescription": "A video player for Windows built on libmpv. Plays local files, links and magnet torrents in one window, with frame-accurate seeking, seekbar previews, resume, subtitle search, chapters, a mini player and frame export.",
+    "createUpdaterArtifacts": true,
+    "targets": ["nsis"],
+    "windows": {
+      "nsis": {
+        "installerHooks": "installer-hooks.nsh"
+      }
+    },
+    "license": "GPL-3.0-or-later",
+    "resources": {
+      "lib/**/*": "lib/",
+      "ffmpeg/bin/*.dll": "./",
+      "ffmpeg/bin/ffmpeg.*": "./",
+      "lua/*.lua": "lua/",
+      "../THIRD-PARTY-NOTICES.md": "./",
+      "../LICENSE": "./"
+    },
+    "fileAssociations": [
+      {
+        "ext": ["mp4", "m4v", "mkv", "webm", "avi", "mov", "wmv", "flv", "ts", "m2ts", "mts", "mpg", "mpeg", "vob", "ogv", "3gp"],
+        "name": "Video",
+        "description": "Video file",
+        "role": "Viewer"
+      }
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ]
+  }
+}

@@ -1,0 +1,501 @@
+<script lang="ts">
+  /// The control row: play, previous/next, volume, speed, loop, the menu
+  /// toggles, fullscreen.
+  ///
+  /// In the mini window everything that belongs to a full-sized session stands
+  /// down and the row becomes one column — written on this element rather than
+  /// as `.player.mini .controls`, since the player root is the page's and a
+  /// scoped selector cannot reach across that boundary.
+  import { cast } from '$lib/cast.svelte';
+  import { t } from '$lib/i18n.svelte';
+  import { hintPair, withKey } from '$lib/keys.svelte';
+  import {
+    VOLUME_SCALE,
+    advance,
+    playback,
+    setVolume,
+    toggleMute,
+    togglePause,
+  } from '$lib/playback.svelte';
+  import { overlays, type OscMenu } from '$lib/overlays.svelte';
+  import { LOOP_LABEL, isNetworkSource, player } from '$lib/player.svelte';
+  import { playlist } from '$lib/playlist.svelte';
+  import { parseTorrentUrl } from '$lib/source';
+  import MoreMenu from './MoreMenu.svelte';
+
+  interface Props {
+    mini: boolean;
+    fullscreen: boolean;
+    openMenu: OscMenu | null;
+    onToggleMenu: (kind: OscMenu) => void;
+    onCycleLoop: () => void;
+    onToggleFullscreen: () => void;
+  }
+
+  let { mini, fullscreen, openMenu, onToggleMenu, onCycleLoop, onToggleFullscreen }: Props =
+    $props();
+
+  const hasFile = $derived(player.hasFile);
+  /// Rounded once: the readout, the tooltip and the label are the same number
+  /// and must not disagree by a unit at a rounding boundary.
+  const volume = $derived(Math.round(playback.volume));
+
+  // ---- Which right-hand tools this file offers ---------------------------
+  //
+  // Written once and read three times — by the buttons below, by the count
+  // that decides whether they fit, and by the panel they fold into. The cast
+  // condition in particular was a line of markup nobody would have thought to
+  // keep in step with anything.
+  const showQueue = $derived(playlist.hasQueue);
+  const showChapters = $derived(player.hasChapters);
+  const showAudio = $derived(player.audioTracks.length > 1);
+  const showSubs = $derived(hasFile);
+  /// Local files and torrents (whose data may be a complete file on this disk),
+  /// plus whatever is already casting.
+  const showCast = $derived(
+    (hasFile && (!isNetworkSource(player.filePath) || !!parseTorrentUrl(player.filePath ?? ''))) ||
+      cast.active,
+  );
+
+  // ---- Does the right cluster still fit? ---------------------------------
+  //
+  // The row is `1fr auto 1fr`, and a `1fr` column's automatic minimum is its
+  // content: when the right cluster outgrows its share, the column takes what
+  // it needs and the centre column slides left with it — play, prev and next
+  // visibly off centre, which is how this was reported. A file with chapters,
+  // several dubs, subtitles and a queue carries seven buttons where a plain
+  // stream carries three, so the width where that happens is a property of the
+  // FILE, not a breakpoint: measured, seven of them break a ~770px window and
+  // three would not break a 500px one. A media query would therefore have to be
+  // written for the worst case and would fold the bar away on files that fit.
+  //
+  // So the predicate is the grid's own arithmetic. The centre stays centred
+  // while each side column can hold its content, i.e. while
+  //     available - centre >= 2 x (what the right cluster needs).
+  // Every term is measured except the count, and the count is what the markup
+  // below already branches on. Nothing in it is read from the *current* layout,
+  // which is what keeps it from oscillating: folding the cluster away changes
+  // none of these numbers, so the answer cannot flip back the moment it acts.
+  let rowEl = $state<HTMLElement | undefined>();
+  let centerEl = $state<HTMLElement | undefined>();
+  let rightEl = $state<HTMLElement | undefined>();
+  let fsEl = $state<HTMLElement | undefined>();
+  let avail = $state(0);
+  let centerW = $state(0);
+  /// One button and the gap after it. Every button in the cluster is the same
+  /// 36px box (`.fs` differs only in its glyph), so the cluster's width is this
+  /// times the count, less the trailing gap.
+  let btnStep = $state(0);
+  let gapW = $state(0);
+
+  $effect(() => {
+    const row = rowEl;
+    const center = centerEl;
+    if (!row || !center) return;
+    const measure = () => {
+      avail = row.clientWidth;
+      centerW = center.getBoundingClientRect().width;
+      if (fsEl && rightEl) {
+        gapW = parseFloat(getComputedStyle(rightEl).columnGap) || 0;
+        btnStep = fsEl.getBoundingClientRect().width + gapW;
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(row);
+    observer.observe(center);
+    return () => observer.disconnect();
+  });
+
+  /// The loop button and fullscreen are always there; the rest come and go.
+  const toolCount = $derived(
+    2 + [showQueue, showChapters, showAudio, showSubs, showCast].filter(Boolean).length,
+  );
+  const collapsed = $derived(
+    !mini && avail > 0 && btnStep > 0 && avail - centerW < 2 * (toolCount * btnStep - gapW),
+  );
+
+  // Widening the window while the overflow panel is up takes its button away,
+  // and a panel whose control is gone would hang there holding the chrome open
+  // (`overlays.any`) with nothing left to close it but Escape.
+  $effect(() => {
+    if (!collapsed && openMenu === 'more') onToggleMenu('more');
+  });
+
+  // The panels opened from that button need to know they were: it is what puts
+  // a "back" row at the top of them, and what takes it away again the moment
+  // the window is wide enough for the buttons themselves.
+  $effect(() => {
+    overlays.folded = collapsed;
+  });
+</script>
+
+<div class="controls" class:mini bind:this={rowEl}>
+  <div class="cluster cl-left">
+  <!-- Disabled with the slider beside it, and for the same reason: a
+       receiver that will not take a volume will not take a mute either, and
+       a button that flips back on its own reads as broken. The keyboard
+       path still explains where the volume lives. -->
+  <button
+    data-tip={withKey(t('osc.sound'), 'mute')}
+    aria-label={t('osc.sound')}
+    disabled={!playback.can.volume}
+    onclick={toggleMute}
+  >
+    {#if playback.muted}
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5v-.7zM19 12a7 7 0 0 1-1.2 3.9l1.5 1.5A9 9 0 0 0 21 12a9 9 0 0 0-7-8.8v2.1A7 7 0 0 1 19 12zM4.3 3L3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.2a6.9 6.9 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8L20 21.7 21.3 20 4.3 3zM12 4L9.9 6.1 12 8.2V4z"/></svg>
+    {:else}
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>
+    {/if}
+  </button>
+  <!-- One bar for both transports: `playback` speaks a single 0..VOLUME_SCALE
+       scale, so nothing here has to know whose volume it is showing. While
+       casting that is the receiver's own 0..1 with no amplification range —
+       100 is the device's ceiling, not a point on the way to 150. -->
+  <input
+    class="volumebar"
+    type="range"
+    min="0"
+    max={VOLUME_SCALE}
+    step="1"
+    disabled={!playback.can.volume}
+    value={volume}
+    oninput={(e) => setVolume(Number(e.currentTarget.value))}
+    onchange={(e) => e.currentTarget.blur()}
+    style="--progress: {(volume / VOLUME_SCALE) * 100}%"
+    data-tip={t('osd.volume', { value: volume })}
+    aria-label={t('osd.volume', { value: volume })}
+  />
+  {#if player.speed !== 1 && playback.can.speed}
+    <span class="speed" data-tip={t('osc.speed')} aria-label={t('osc.speed')}>{player.speed}×</span>
+  {/if}
+  </div>
+  <div class="cluster cl-center" bind:this={centerEl}>
+  <button data-tip={withKey(t('osc.prev'), 'playlist_prev')} aria-label={t('osc.prev')} disabled={player.playlistPos <= 0} onclick={() => advance(-1)}>
+    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+  </button>
+  <button class="play" data-tip={withKey(t('osc.play'), 'pause')} aria-label={t('osc.play')} disabled={!hasFile} onclick={togglePause}>
+    {#if playback.paused}
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+    {:else}
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+    {/if}
+  </button>
+  <button data-tip={withKey(t('osc.next'), 'playlist_next')} aria-label={t('osc.next')} disabled={player.playlistPos >= player.playlistCount - 1} onclick={() => advance(1)}>
+    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>
+  </button>
+  </div>
+  <div class="cluster cl-right" bind:this={rightEl}>
+  {#if collapsed}
+    <!-- Everything above, folded into one control. It keeps `.menu-toggle`
+         because that is what tells the outside-click dismissal that this
+         button owns the panel: without it, pressing it while the panel is up
+         would close the panel *and* toggle it back open.
+         It is lit for whatever OSC menu is open rather than for its own panel
+         alone: while the bar is folded, every one of them was opened from a row
+         in here, and a panel hanging off a button that looks untouched reads as
+         a stray window. -->
+    <button
+      class="menu-toggle"
+      data-tip={t('osc.more')}
+      aria-label={t('osc.more')}
+      class:active={openMenu !== null}
+      onclick={() => onToggleMenu('more')}
+    >
+      <!-- A gear rather than the three dots this started as. The dots are the
+           truthful signifier for "what did not fit", but nobody reads a control
+           bar that way: what people expect behind a gear in a player is exactly
+           what is behind this one — repeat, tracks, subtitles, where it is
+           playing. The panel is named for that rather than for the overflow it
+           technically is, so the icon and its heading agree.
+           The one gear already in the player means something else (`.tv-gear`,
+           the per-device profile in the cast panel) and is drawn as sliders, so
+           the two do not collide. This is Material's own settings glyph, which
+           fills ~19 of the 24-unit box — the size its neighbours are drawn to. -->
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+      </svg>
+    </button>
+    {#if openMenu === 'more'}
+      <!-- Inside the cluster, which costs nothing: the panel is absolutely
+           positioned and `.osc` is the nearest positioned ancestor, so it
+           lands exactly where every other OSC panel does. -->
+      <MoreMenu
+        {showQueue}
+        {showChapters}
+        {showAudio}
+        {showSubs}
+        {showCast}
+        onPick={onToggleMenu}
+        {onCycleLoop}
+      />
+    {/if}
+  {:else}
+    <button
+      data-tip={withKey(t(LOOP_LABEL[player.loopMode]), 'loop')}
+      aria-label={t(LOOP_LABEL[player.loopMode])}
+      class:active={player.loopMode !== 'off'}
+      onclick={onCycleLoop}
+    >
+      <svg viewBox="0 0 24 24">
+        <path fill="currentColor" d="M17 7H7v3l-4-4 4-4v3h12v6h-2V7zM7 17h10v-3l4 4-4 4v-3H5v-6h2v4z"/>
+        <!-- The digit goes in the gap between the two arrows (y 7–17 of the
+             viewBox), which is exactly where Material's own repeat_one puts
+             it — drawn as a path rather than a "1" glyph, since a glyph has
+             no dependable center in the em square. -->
+        {#if player.loopMode === 'one'}
+          <path fill="currentColor" d="M13 15V9h-1l-2 1v1h1.5v4H13z"/>
+        {/if}
+      </svg>
+    </button>
+    {#if showQueue}
+      <button
+        class="menu-toggle"
+        data-tip={t('osc.queue')}
+        aria-label={t('osc.queue')}
+        class:active={openMenu === 'queue'}
+        onclick={() => onToggleMenu('queue')}
+      >
+        <!-- The bars share the chapter icon's rhythm exactly — same rows,
+             same thickness — because the two sit side by side and any
+             difference in pitch reads as a mistake rather than as a
+             distinction. Two earlier attempts got the vertical placement
+             wrong in opposite directions: a play mark hanging BELOW the last
+             bar dropped the glyph's center to y=14 (against the box's 12),
+             and a tighter pitch then lifted the bar group above its
+             neighbour's.
+             Everything horizontal here is on a 1.2-unit grid, which is what
+             keeps the bars sharp: the 24-unit box renders into 20 px, so one
+             unit is 5/6 px and only multiples of 1.2 land on a whole pixel —
+             at 1x and, being multiples of 0.6 device px, at 2x as well.
+             Off-grid edges bleed across two rows of pixels, which reads as
+             bars that are both blurry and too thick, and a glyph in a
+             different sub-pixel phase from its neighbour looks like a
+             different weight. Hence 2.4 thick on rows 3.6 / 10.8 / 18, shared
+             verbatim with the chapter icon.
+             The play mark is centered on the last row and kept NARROW (4.8
+             against 5.6 tall). A wide one read as another arrowhead beside
+             the repeat icon, which carries one in the same corner — two
+             right-pointing wedges side by side stop looking like two
+             different controls. The ink it gives up is handed back to the
+             bottom bar, whose row has to weigh as much as a full-width one or
+             the whole glyph floats above its neighbour: measured 11.89
+             against the chapter icon's 11.94, where the same mark over a
+             short bar gave 11.73. -->
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M2.4 3.6h19.2v2.4H2.4zM2.4 10.8h19.2v2.4H2.4zM2.4 18h13.2v2.4H2.4zM16.8 16.4v5.6l4.8-2.8z"/>
+        </svg>
+      </button>
+    {/if}
+    {#if showChapters}
+      <button
+        class="menu-toggle"
+        data-type="chapters"
+        data-tip={t('osc.with_key', { label: t('osc.chapters'), key: hintPair('chapter_prev', 'chapter_next') })}
+        aria-label={t('osc.chapters')}
+        class:active={openMenu === 'chapter'}
+        onclick={() => onToggleMenu('chapter')}
+      >
+        <!-- Drawn to fill the box like its neighbours rather than to the
+             proportions of Material's own list glyph: that one occupies
+             16×12 of the 24×24 viewBox where the loop is 18×20 and the mic
+             18×18, and at a shared 20px it visibly sat smaller than both.
+             Bars are 2.4 thick on rows 3.6 / 10.8 / 18 — the 1.2-unit grid
+             explained on the queue icon, which shares these rows exactly so
+             the two read as one family standing side by side. -->
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M8.4 3.6h13.2v2.4H8.4zM8.4 10.8h13.2v2.4H8.4zM8.4 18h13.2v2.4H8.4z"/>
+          <circle cx="4.2" cy="4.8" r="1.8"/>
+          <circle cx="4.2" cy="12" r="1.8"/>
+          <circle cx="4.2" cy="19.2" r="1.8"/>
+        </svg>
+      </button>
+    {/if}
+    {#if showAudio}
+      <button class="menu-toggle" data-tip={t('osc.audio')} aria-label={t('osc.audio')} class:active={openMenu === 'audio'} onclick={() => onToggleMenu('audio')}>
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9v7a2 2 0 0 0 2 2h3v-8H5v-1a7 7 0 1 1 14 0v1h-3v8h3a2 2 0 0 0 2-2v-7a9 9 0 0 0-9-9z"/></svg>
+      </button>
+    {/if}
+    {#if showSubs}
+      <button class="menu-toggle" data-tip={t('osc.subs')} aria-label={t('osc.subs')} class:active={openMenu === 'sub'} onclick={() => onToggleMenu('sub')}>
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zM6 10h2v2H6v-2zm8 6H6v-2h8v2zm4 0h-2v-2h2v2zm0-4H10v-2h8v2z"/></svg>
+      </button>
+    {/if}
+    {#if showCast}
+      <!-- Blue while connected: the accent means on/selected, and a live
+           cast session is a boolean "on". Local files and torrents (whose
+           data may be a complete file on this disk — resolveCastSource
+           answers, and an incomplete one refuses with the reason); a plain
+           network stream cannot be served to the TV from a disk it is
+           not on. -->
+      <button
+        class="menu-toggle"
+        class:cast-on={cast.active}
+        data-tip={t('cast.tip')}
+        aria-label={t('cast.tip')}
+        class:active={openMenu === 'cast'}
+        onclick={() => onToggleMenu('cast')}
+      >
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11z"/></svg>
+      </button>
+    {/if}
+  {/if}
+  <button
+    class="fs"
+    bind:this={fsEl}
+    data-tip={withKey(t(fullscreen ? 'bar.fullscreen_exit' : 'bar.fullscreen'), 'fullscreen')}
+    aria-label={t(fullscreen ? 'bar.fullscreen_exit' : 'bar.fullscreen')}
+    onclick={onToggleFullscreen}
+  >
+    {#if fullscreen}
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
+    {:else}
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+    {/if}
+  </button>
+  </div>
+</div>
+
+<style>  /* One edge per side of the window, 20px in, and everything that sits against
+     a side ends on it: the seekbar and the timestamps (`.osc`'s padding), the
+     *glyphs* at the ends of this row, the logo in the title bar, the track
+     menus, the skip button, the torrent and room readouts, the OSD — and the
+     system's own traffic lights and window buttons, which is why the line is
+     20 rather than anything rounder: they are the two things here nobody gets
+     to move. A button's glyph sits 11px inside its 36px box (fullscreen: 6 of
+     box, 5 of path; volume: 8 and 2.5), so the row reaches 11px past the bar's
+     padding for the glyphs to land on the line. It used to stop at the padding,
+     which put the fullscreen glyph 35px in against a logo at 20 and a menu at
+     24 — three edges on one side of the window.
+     A margin on the row, not on the clusters: `avail` below is the row's own
+     width, so the fold arithmetic sees the extra 22px by itself. */
+  .controls {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    margin: 8px -11px 0;
+  }
+
+  .cluster {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .cl-left {
+    justify-self: start;
+  }
+
+  .cl-center {
+    justify-self: center;
+    gap: 14px;
+  }
+
+  .cl-right {
+    justify-self: end;
+  }
+
+  .controls button {
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    width: 36px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    color: #e8e8ec;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .controls button svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .controls button.play {
+    width: 46px;
+    height: 42px;
+  }
+
+  /* 32 rather than 30: every other box in the row is a multiple of 4 (20 for
+     the ordinary controls, 24 for fullscreen), and rounding up also widens the
+     gap to prev/next, which is the point of them being small. Those stay at 20
+     — their glyph fills 12 of its 24 units, so a 24px box would render it 12px
+     wide against play's 14.7 and the two would read as the same size. */
+  .controls button.play svg {
+    width: 32px;
+    height: 32px;
+  }
+
+  .controls button:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  .controls button:disabled {
+    color: #6a6a74;
+    cursor: default;
+  }
+
+  .controls button.active {
+    color: #4cb4ff;
+  }
+
+  .speed {
+    color: #4cb4ff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 0 6px;
+    text-shadow: var(--ui-shadow);
+  }
+
+  .volumebar {
+    width: 90px;
+    margin: 0 6px 0 2px;
+  }
+  /* The TV declared its volume fixed (or never reported one): the slider is
+     disabled rather than silently inert, and keys/wheel raise the OSD saying
+     volume lives on the TV's own remote. */
+  .volumebar:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  /* The "corners" glyph is drawn more compactly than the rest — even out the
+     optical size */
+  .controls button.fs svg {
+    width: 24px;
+    height: 24px;
+  }
+
+  /* Blue means on: a live cast session is a boolean "on", same rule as
+     .switch.on and the focus rings. */
+  .controls button.cast-on {
+    color: #4cb4ff;
+  }
+
+  .controls.mini .cluster.cl-left,
+  .controls.mini .cluster.cl-right {
+    display: none;
+  }
+
+  /* `.controls` is a `1fr auto 1fr` grid, so hiding the side clusters does not
+     center what is left — the remaining cluster auto-places into the first
+     column and the row sits against the left edge. The mini row is one item,
+     so it gets a one-column grid. */
+  .controls.mini {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    margin: 4px 0 0;
+  }
+
+  .controls.mini button.play {
+    width: 38px;
+    height: 34px;
+  }
+
+  .controls.mini button.play svg {
+    width: 24px;
+    height: 24px;
+  }
+</style>

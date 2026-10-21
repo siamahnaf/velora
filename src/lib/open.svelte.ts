@@ -1,0 +1,1303 @@
+/**
+ * How a source becomes a playing file: the link box, torrents, and the
+ * indicator that says something slow is under way.
+ *
+ * **This is one module rather than the two it was planned as**, and trying to
+ * cut it in half is what showed why. "The link box" and "torrents" depend on
+ * each other in both directions and by design: a magnet is pasted into the box
+ * that takes links, because that is the obvious place to put a link, so
+ * `submitLink` dispatches into the torrent flow — and the torrent flow reports
+ * its failures back through `linkBox.torrentError`, raising that same dialog,
+ * because a dropped `.torrent` has nowhere else to say what went wrong.
+ * Deleting a torrent then has to refresh the box's own recents list, since a
+ * magnet in it names a season that no longer exists. A boundary drawn between
+ * them would be a cycle with a hook bolted across it.
+ *
+ * What it deliberately does not own: `loadFiles` (player.svelte.ts), the queue
+ * (playlist.svelte.ts) and the position store (history.svelte.ts). It composes
+ * those; it does not reimplement any of them.
+ *
+ * The window dimming that goes with a system file picker is the shell's, and is
+ * borrowed through `withFileDialog` rather than reimplemented here.
+ */
+
+import { invoke } from '@tauri-apps/api/core';
+import { open as pickPath } from '@tauri-apps/plugin-dialog';
+import { tick } from 'svelte';
+
+import { withFileDialog } from './chrome.svelte';
+import { fmtSize, fmtSpeed } from './units';
+import {
+  forgetLink,
+  purgeTorrentHistory,
+  recentLinks,
+  rememberLink,
+  rememberTitle,
+  resolveTitle,
+  titleFor,
+  type RecentItem,
+} from './history.svelte';
+import { t } from './i18n.svelte';
+import { latest, type Attempt } from './latest';
+import { showOsd } from './osd.svelte';
+import {
+  applyYtdlpPath,
+  isNetworkSource,
+  loadFiles,
+  pickAndLoadFiles,
+  player,
+  refreshYtdlp,
+  ytdlp,
+} from './player.svelte';
+import { queueTorrent } from './playlist.svelte';
+import { isMagnet, isTorrentLink, magnetFor, parseTorrentUrl, torrentId } from './source';
+import {
+  findFeedUpdate,
+  isFeedLink,
+  isOpenable,
+  itemForHash,
+  sortFeedItems,
+  type Feed,
+  type FeedItem,
+} from './feed';
+import {
+  addTorrent,
+  forgetResolve,
+  releaseTorrent,
+  DELETE_STUCK,
+  expectFeed,
+  findSupersededTorrent,
+  forgetTorrent,
+  listTorrents,
+  readFeed,
+  refreshPortStatus,
+  rememberedTorrents,
+  rememberTorrent,
+  resolveFeedItem,
+  resolveTorrentFile,
+  setTorrentFeed,
+  setEncryption,
+  setPortForward,
+  setProxy,
+  setRoute,
+  setSeeding,
+  torrent,
+  torrentFailureText,
+  torrentIsPlaying,
+  torrentPrefs,
+  torrentResume,
+  torrentVideos,
+  updateTorrent,
+  watchedFiles,
+  withDeadline,
+  type Encryption,
+  type Route,
+  type RememberedTorrent,
+  type TorrentFile,
+  type TorrentInfo,
+  type TorrentRow,
+} from './torrent.svelte';
+
+/**
+ * An `end-file` error does NOT mean the attempt failed.
+ *
+ * mpv's ytdl hook routinely raises one on the way to succeeding — it opens the
+ * original URL, gives up on it, and loads what yt-dlp resolved instead — and a
+ * playlist transition can do the same. Reporting on the event itself therefore
+ * threw an error dialog over videos that were about to play, which is worse
+ * than saying nothing. So the verdict waits: if anything loads in the meantime,
+ * `cancelLoadFailure` (from `onFileLoaded`) cancels it and nobody hears about it.
+ */
+const LOAD_FAIL_GRACE = 2500;
+
+/// How long a swarm may be empty before the readout stops describing it and
+/// starts explaining it.
+///
+/// Zero peers is the ordinary reading for the first seconds of any torrent —
+/// measured on a healthy public swarm, thirteen peers arrive within about ten —
+/// so anything shorter would accuse a working network. Past that it is no
+/// longer a wait, it is a diagnosis: whatever is on screen has stopped being
+/// true, and the viewer is looking at an unchanging line deciding whether the
+/// player is broken.
+const PEERLESS_ADVICE_MS = 20000;
+
+/// How long to wait before asking a site for a title mpv has not produced.
+const TITLE_LOOKUP_DELAY = 1500;
+
+/// How long a feed's answer stands before the start screen asks it again.
+///
+/// The start screen is re-entered every time a film is closed, and a feed that
+/// changes once a week does not need a request each time. The update button
+/// ignores this — somebody pressing it wants to know now.
+const FEED_RECHECK_MS = 10 * 60 * 1000;
+
+class Opening {
+  linkOpen = $state(false);
+  /// The link box's own state, grouped so `LinkDialog` can take it whole and
+  /// bind into it. It outlives the dialog closing: a failed link reopens it with
+  /// the same text and an explanation of what went wrong.
+  box = $state({
+    value: '',
+    failed: false,
+    /// A link failed to open. Kept until the next attempt, because the reason is
+    /// worth reading twice — especially the yt-dlp one.
+    torrentError: null as string | null,
+    /// Read when the dialog opens rather than kept live: the list only changes
+    /// when a link is opened, which closes the dialog.
+    recent: [] as string[],
+    /// Titles for the rows, by link. A row shows its id until one arrives.
+    titles: {} as Record<string, string>,
+    inputEl: undefined as HTMLInputElement | undefined,
+  });
+  /// The link that failed, so the fix can retry it without retyping.
+  lastLink = $state('');
+  /// What the player is currently trying to open. NOT `lastLink`, which only
+  /// ever remembers the last thing typed into the dialog and is never cleared:
+  /// judging a failure by that meant a stray `end-file` error long afterwards —
+  /// and they happen routinely, e.g. when a load is abandoned because another
+  /// file was opened — reopened the link dialog over the start screen. Its
+  /// backdrop then swallowed the next click, so opening a file "did nothing"
+  /// until enough clicks had dismissed enough dialogs.
+  attempting = $state('');
+  /// An install or update of yt-dlp is running.
+  ytdlpBusy = $state(false);
+  /// Download progress, 0..100, or null when there is nothing to report — an
+  /// update runs inside yt-dlp itself, which does not tell us how far along it
+  /// is, so the button falls back to a label without a figure.
+  ytdlpPct = $state<number | null>(null);
+
+  /**
+   * A network source is being opened and nothing is on screen yet.
+   *
+   * Between `loadfile` and the first frame a URL can take many seconds — yt-dlp
+   * resolving the page, then the stream buffering — and all of it used to be a
+   * black window with no sign that anything was happening. Local files never get
+   * here: they open faster than the indicator would fade in.
+   */
+  busy = $state(false);
+
+  /// A resolved torrent waiting for the viewer to choose a file from it.
+  pick = $state<TorrentInfo | null>(null);
+
+  /// The torrent being replaced, and the link for it. Null when the dialog is shut.
+  updateFor = $state<RememberedTorrent | null>(null);
+  updateValue = $state('');
+  updateBusy = $state(false);
+  updateError = $state<string | null>(null);
+  /// Set when a link typed into the ordinary "Open link…" box looks like a newer
+  /// release of something already in the list — see `submitLink`.
+  updateSuggested = $state(false);
+  /// The feed item the suggested link came from, when a feed found it — the
+  /// dialog names it, since "a newer upload in your feed" is a stronger claim
+  /// than a resemblance between two names.
+  updateFeedItem = $state<string | null>(null);
+  /// A remark that is not an error: a feed pasted into the update dialog was
+  /// attached, and had nothing newer yet.
+  updateNote = $state<string | null>(null);
+
+  /// A feed is being read, or one of its items turned into a torrent.
+  feedBusy = $state(false);
+  /// A feed holding more than one release, waiting for the viewer to choose.
+  feedPick = $state<{ url: string; feed: Feed; items: FeedItem[] } | null>(null);
+  /// The torrent whose feed the update button is reading right now.
+  feedChecking = $state<string | null>(null);
+
+  /// The torrent list on the start screen.
+  rows = $state<TorrentRow[]>([]);
+  /// The folder being deleted, so its row can gray out — `remove_dir_all` over
+  /// 9 GB is not instant and a row that keeps looking clickable invites a second
+  /// press.
+  rowBusy = $state<string | null>(null);
+  /// The folder currently being resolved, so its row can say so. Resolving a
+  /// magnet is a DHT lookup — a second at best — and the row used to sit there
+  /// looking untouched for all of it.
+  rowOpening = $state<string | null>(null);
+
+  /// The name of the video being played, when mpv has none. mpv normally
+  /// supplies it (yt-dlp resolves the page), so this is the fallback for the
+  /// case the viewer actually sees: a link whose title never arrived, leaving a
+  /// video id in the title bar.
+  resolvedTitle = $state<string | null>(null);
+
+  total = $derived(this.rows.reduce((sum, r) => sum + r.size, 0));
+
+  /// What the indicator says. mpv reports the cache fill only while there is a
+  /// cache, so an absent figure means "still resolving", not "0%".
+  label = $derived.by(() => {
+    // **The magnet resolve is asked about first, because it happens before mpv
+    // has been given anything at all**: there is no cache to report a fill for
+    // and nothing to be stalled on, so every other branch here would answer
+    // "Opening the link…" for a wait that is a DHT lookup and can run to a
+    // minute and a half. That is what made the longest wait in the player also
+    // the emptiest-looking one.
+    if (torrent.resolving) return t('torrent.resolving');
+    if (player.stalled) return t('load.stalled');
+    const pct = player.cacheBuffering;
+    return pct !== null && pct < 100 ? t('load.buffering', { percent: pct }) : t('load.opening');
+  });
+
+  /// When the wait now on screen began, or 0 for one that should not be timed.
+  ///
+  /// Only the resolve: everything else the overlay reports has a figure of its
+  /// own — a buffering percentage, a peer count — and a figure beats a clock.
+  /// What a clock is for is the wait with nothing to count, where the only
+  /// question is whether anything is still happening.
+  since = $derived(torrent.resolving ? torrent.resolvingSince : 0);
+
+  /**
+   * The live torrent readout, or null when there is nothing to report.
+   *
+   * Only while a torrent is actually feeding playback: a finished download has
+   * no rate worth watching, and a local file has no swarm. `busy` is excluded
+   * because the loading overlay is already saying all of this, and two copies of
+   * the same numbers on screen at once is worse than one.
+   */
+  chip = $derived.by(() => {
+    const s = torrent.status;
+    if (!s || !player.hasFile || this.busy) return null;
+    if (s.state !== 'live' && s.state !== 'initializing') return null;
+    // Nothing left to fetch for this file — the chip has served its purpose and
+    // would otherwise sit at 100% for the rest of the film.
+    if (s.file_size > 0 && s.file_done >= s.file_size) return null;
+    return s;
+  });
+
+  /**
+   * The sentence that names a likely cause, once "connecting…" has stopped
+   * being an answer.
+   *
+   * Deliberately **not** part of `torrentLabel`: that line is also the top-right
+   * chip, which is a readout beside the picture and cannot grow into a
+   * paragraph. This one is for the loading overlay, where there is room and
+   * where the question is being asked.
+   *
+   * What it says is what the counters already show and nobody can read: peers
+   * *seen* against peers *connected*. Addresses arriving while no connection is
+   * made is the signature of BitTorrent being filtered — a VPN that forbids it,
+   * an ISP that throttles it — and it is the one cause a viewer can act on,
+   * because everything else about it looks exactly like a slow film.
+   */
+  swarmAdvice = $derived.by(() => {
+    const s = torrent.status;
+    if (!s || s.state !== 'live' || s.peers > 0) return null;
+    const since = torrent.peerlessSince;
+    // Re-read every second with the status, which is what makes the threshold
+    // arrive on its own rather than at the next thing the viewer does.
+    if (!since || Date.now() - since < PEERLESS_ADVICE_MS) return null;
+    return s.peers_seen > 0 ? t('torrent.connecting_hint') : t('torrent.no_peers_hint');
+  });
+
+  /**
+   * The second line, when a torrent is what is slow.
+   *
+   * mpv's own answer to "why is nothing happening" over a torrent is
+   * `paused-for-cache`, which says *that* it is waiting and nothing about why.
+   * Whether the swarm is empty or simply slow is the difference between "this is
+   * broken" and "give it ten seconds", and it is the only thing that makes
+   * waiting bearable — so the peer count and the rate go under the label
+   * whenever they are what the viewer is waiting on.
+   */
+  torrentLabel = $derived.by(() => {
+    const s = torrent.status;
+    if (!s || s.state === 'gone') return null;
+    if (s.state === 'error') return s.error ?? t('torrent.error');
+    // Not a swarm problem at all: librqbit is hashing what is already on disk.
+    // Measured at 3.1 s for a season with 46 MB fetched, and it is the whole of
+    // the wait when reopening a half-watched one — while `peers` is legitimately
+    // zero, so without this the popup announced "no peers" for something that
+    // was not looking for any.
+    if (s.state === 'initializing') return t('torrent.verifying');
+    // No peers at all is a different problem from a slow one, and the advice
+    // ("this torrent has no seeders") is different too.
+    if (s.peers === 0) {
+      return s.peers_seen > 0 ? t('torrent.connecting') : t('torrent.no_peers');
+    }
+    return t('torrent.rate', { peers: s.peers, speed: fmtSpeed(s.down_bps) });
+  });
+}
+
+export const opening = new Opening();
+
+let loadFailTimer: ReturnType<typeof setTimeout> | undefined;
+
+// ---- The link box ---------------------------------------------------------
+
+/**
+ * Raise the link box, empty.
+ *
+ * **Opening it deliberately is a fresh start, and that is not the same as the
+ * box surviving a close.** The field and its message are kept across a close on
+ * purpose — a link that fails reopens the dialog with the text still in it and
+ * an explanation of what went wrong, which is what makes the yt-dlp button
+ * usable — but those paths raise the dialog themselves (`reportLoadFailure`,
+ * `openTorrent`'s failure) and never come through here. What comes through here
+ * is somebody choosing to open a link, and finding the previous one still typed
+ * is wrong twice over: it has to be cleared by hand before anything can be
+ * pasted, and while the field is non-empty the recents list below it is hidden,
+ * so the one place the previous links are offered disappears. A stale error line
+ * from a torrent that failed an hour ago goes with it.
+ */
+export async function openLinkDialog() {
+  opening.box.value = '';
+  opening.box.failed = false;
+  opening.box.torrentError = null;
+  opening.box.recent = recentLinks();
+  for (const url of opening.box.recent) {
+    const known = titleFor(url);
+    if (known) opening.box.titles = { ...opening.box.titles, [url]: known };
+  }
+  opening.linkOpen = true;
+  void fillLinkTitles();
+  await tick();
+  // Focused so the paste shortcut works with nothing else to click.
+  opening.box.inputEl?.focus();
+  opening.box.inputEl?.select();
+}
+
+/// Fill in whatever names are missing, one request at a time — this is a
+/// network call per unknown link, and a list of eight should not open eight
+/// connections at once.
+async function fillLinkTitles() {
+  for (const url of opening.box.recent) {
+    if (opening.box.titles[url]) continue;
+    const title = await resolveTitle(url);
+    if (title) opening.box.titles = { ...opening.box.titles, [url]: title };
+  }
+}
+
+/// Drop one row of the recent-links list.
+///
+/// The list is the *only* thing touched: a magnet in it may name a torrent whose
+/// episodes are on disk, and "I do not want this link offered again" is not
+/// "delete the season" — that is what the torrent list's own cross is for.
+export function dropLink(url: string) {
+  forgetLink(url);
+  opening.box.recent = recentLinks();
+}
+
+export function submitLink(url = opening.box.value.trim()) {
+  if (!url) return;
+  // Dispatched by shape, not by a separate box: a magnet and a YouTube link are
+  // the same gesture — the viewer has a link — and which protocol reaches the
+  // video is the player's problem, not theirs.
+  // A feed is asked first and handed on if it turns out not to be one — the
+  // shape of a URL is only a hint, and a wrong guess costs one request.
+  if (isFeedLink(url) && !isTorrentLink(url)) {
+    void openFeed(url);
+    return;
+  }
+  openOrdinaryLink(url);
+}
+
+function openOrdinaryLink(url: string) {
+  if (isTorrentLink(url)) {
+    // A re-upload usually arrives here rather than through the update button,
+    // because pasting a link into the box that takes the recents list is the
+    // obvious move. Opening it as a separate torrent would silently re-download
+    // a season and reset its history, so the resemblance is worth a question —
+    // asked before anything is added, while both outcomes are still cheap.
+    const superseded = findSupersededTorrent(url);
+    if (superseded) {
+      opening.linkOpen = false;
+      void openUpdateDialog(superseded, url);
+      return;
+    }
+    void openTorrent(url);
+    return;
+  }
+  opening.linkOpen = false;
+  opening.box.failed = false;
+  opening.lastLink = url;
+  rememberLink(url);
+  opening.box.recent = recentLinks();
+  void loadFiles([url]);
+}
+
+/**
+ * Install or update yt-dlp, then have another go at the link that failed.
+ *
+ * Only our own copy is ever updated — one from Homebrew or pip belongs to its
+ * package manager, so there the dialog explains instead of offering a button it
+ * has no right to press.
+ */
+export async function fixYtdlp() {
+  if (opening.ytdlpBusy) return;
+  opening.ytdlpBusy = true;
+  opening.ytdlpPct = null;
+  try {
+    const version = await invoke<string>(ytdlp.present ? 'ytdlp_update' : 'ytdlp_install');
+    await refreshYtdlp();
+    // mpv learns the path without a restart: installing it mid-session is
+    // exactly the case this whole flow exists for.
+    applyYtdlpPath();
+    showOsd(t('link.ytdlp_ready', { version }));
+    opening.box.failed = false;
+    if (opening.lastLink) {
+      opening.linkOpen = false;
+      void loadFiles([opening.lastLink]);
+    }
+  } catch (e) {
+    showOsd(t('link.ytdlp_failed'));
+    console.warn('yt-dlp install/update failed:', e);
+  } finally {
+    opening.ytdlpBusy = false;
+    opening.ytdlpPct = null;
+  }
+}
+
+export function reportLoadFailure() {
+  clearTimeout(loadFailTimer);
+  loadFailTimer = setTimeout(() => {
+    opening.busy = false;
+    // A link that fails deserves more than a popup that fades: the fix is
+    // usually one button, and the dialog is where the user just was. Judged by
+    // what was being opened, and only while nothing has opened since.
+    if (isNetworkSource(opening.attempting) && !player.hasFile) {
+      // **A torrent stream is a network source by its URL and nothing else.**
+      // It is our own loopback server, so yt-dlp has no part in what just
+      // failed — and the dialog's other branch says the opposite, in the most
+      // confident wording in the player: "usually this means yt-dlp is out of
+      // date". For a swarm nobody is seeding, that is a false lead sent to
+      // somebody who was already lost. It also must not become `lastLink`: that
+      // is what the retry button reloads, and a dead loopback URL is not the
+      // magnet this came from.
+      if (parseTorrentUrl(opening.attempting)) {
+        const why = opening.swarmAdvice;
+        opening.box.torrentError = why
+          ? `${t('torrent.stream_failed')} ${why}`
+          : t('torrent.stream_failed');
+        opening.box.failed = false;
+        opening.linkOpen = true;
+        return;
+      }
+      opening.lastLink = opening.attempting;
+      opening.box.failed = true;
+      opening.linkOpen = true;
+      return;
+    }
+    showOsd(t('osd.open_failed'));
+  }, LOAD_FAIL_GRACE);
+}
+
+/// Drop a pending verdict without declaring success — what `beforeLoad` needs,
+/// since the *next* attempt is about to start and the previous one's failure is
+/// no longer anyone's business.
+export function cancelLoadFailure() {
+  clearTimeout(loadFailTimer);
+}
+
+/// A file opened. Whatever failed on the way there was a step and not an
+/// outcome, and nothing is being attempted any more.
+export function noteOpened() {
+  settleOpening();
+}
+
+/**
+ * The viewer left before anything opened.
+ *
+ * Deliberately not `noteOpened`, which says a file arrived: here nothing did,
+ * and the two only happen to clear the same three things. The indicator is
+ * raised in `beforeLoad` and taken down on `file-loaded`, so **every way out of
+ * a load that never lands has to say so** — otherwise the flag stands for the
+ * rest of the session. Going back to the start screen from a torrent still
+ * finding peers is that way out, and it left "открываем ссылку…" over the
+ * picker with nothing left to clear it: mpv answers the `stop` with an
+ * `end-file` whose reason is `stop`, and only `error` reaches the failure path.
+ */
+export function abandonOpening() {
+  settleOpening();
+  // And whatever is still on its way here is no longer wanted. A torrent is
+  // opened in steps with a wait between them — the resolve alone can run to a
+  // minute and a half — and each step used to carry on after the viewer had
+  // left: the resolve came back and started the film over the start screen,
+  // or raised the plate again with nothing left to take it down.
+  opens.begin();
+  departures += 1;
+  forgetResolve();
+  opening.pick = null;
+  opening.rowOpening = null;
+}
+
+/// What `noteOpened` and `abandonOpening` share: no verdict is pending and
+/// nothing is being attempted.
+function settleOpening() {
+  clearTimeout(loadFailTimer);
+  opening.attempting = '';
+  opening.busy = false;
+}
+
+/// The torrent opens in flight. Begun by each one and by `abandonOpening`, so
+/// an open is stale once the viewer has left or has asked for something else.
+const opens = latest();
+
+/// How many times the viewer has left. Apart from `opens` because a step
+/// shared by several opens (`playTorrentFile`) must be able to ask "did they
+/// leave" without making the open that called it stale.
+let departures = 0;
+
+/**
+ * Whether a torrent open was overtaken while it waited — and if it was, let go
+ * of what it brought back.
+ *
+ * A resolve that finishes after the viewer has left has still added the
+ * torrent to the session, where it would sit connected to its swarm with
+ * nothing playing it. Released only when nothing else has a claim on the
+ * session: no newer resolve under way, nothing playing, no picker open.
+ */
+function overtaken(run: Attempt): boolean {
+  if (!run.stale) return false;
+  if (!torrent.resolving && !player.hasFile && !opening.pick && torrent.info) {
+    void releaseTorrent();
+  }
+  return true;
+}
+
+/**
+ * Ask the site for a name, but only when mpv came up empty-handed.
+ *
+ * mpv normally supplies `media-title` — yt-dlp resolved the page on the way in —
+ * so this is the fallback for the case the viewer actually sees: a link whose
+ * title never arrived, leaving a video id in the title bar. The delay is what
+ * makes it rare: a title that is going to appear has appeared by then, and
+ * asking the site for something already known is a request for nothing.
+ *
+ * Guarded on `filePath` at both ends, because a second and a half is long enough
+ * for the viewer to have opened something else.
+ */
+export function resolveTitleIfMissing() {
+  opening.resolvedTitle = null;
+  const src = player.filePath;
+  if (!src || !isNetworkSource(src)) return;
+  setTimeout(() => {
+    if (player.filePath !== src || player.mediaTitle) return;
+    void resolveTitle(src).then((title) => {
+      if (title && player.filePath === src) opening.resolvedTitle = title;
+    });
+  }, TITLE_LOOKUP_DELAY);
+}
+
+// ---- Torrents -------------------------------------------------------------
+//
+// Resolving a magnet is a DHT lookup that takes ten seconds when it works, so
+// the dialog stays up saying so rather than closing on a black window — the same
+// rule as everywhere else here: a slow operation announces itself before it
+// starts, not after it finishes.
+//
+// What comes back is a *list*. A torrent with one film plays it; a torrent
+// holding a season is a question only the viewer can answer, so it gets a
+// picker. Either way every video in it becomes a queue entry, which costs
+// nothing until one is played (see torrent.rs).
+
+export async function openTorrent(source: string) {
+  opening.box.torrentError = null;
+  opening.pick = null;
+  opening.lastLink = source;
+  const run = opens.begin();
+  try {
+    const info = await addTorrent(source);
+    if (overtaken(run)) return;
+    // **What is remembered is a magnet, whatever was handed over.** A dropped
+    // `.torrent` file is a path that can be moved or deleted and a `.torrent`
+    // URL is a page that can go down, while the info hash names the torrent for
+    // good — and the metadata cache beside it (torrent.rs) makes reopening from
+    // a bare magnet cost no lookup at all. So a file opened once keeps working
+    // after it is thrown away, which is what people do with `.torrent` files.
+    const key = isMagnet(source) ? source : magnetFor(info.info_hash, info.name);
+    rememberLink(key);
+    // The torrent's own name against the magnet, so the recents list reads as a
+    // film rather than a hash. `displayName` would fall back to the `dn`
+    // parameter, but that is the name whoever made the link chose to put in it;
+    // this is the one in the torrent.
+    if (info.name) rememberTitle(key, info.name);
+    // How to reopen this torrent later, which is what makes the start-screen
+    // list and the history cards work after a restart.
+    rememberTorrent(info, key);
+    opening.box.recent = recentLinks();
+    const videos = torrentVideos(info);
+    if (videos.length === 0) {
+      opening.box.torrentError = t('torrent.no_video');
+      return;
+    }
+    if (videos.length === 1) {
+      await playTorrentFile(info, videos[0]);
+      return;
+    }
+    // The box has done its job, exactly as it has when a torrent turns out to
+    // hold one film — `playTorrentFile` closes it there. Left open, it sits
+    // *under* the file picker and comes back when the picker is dismissed,
+    // still holding the magnet that produced it.
+    opening.linkOpen = false;
+    opening.pick = info;
+  } catch (e) {
+    // Nobody is waiting for the reason any more.
+    if (run.stale) return;
+    // The one failure worth naming is the timeout, and naming it is
+    // `torrentFailureText`'s job — shared with the room panel, which shows the
+    // same reason for the same call.
+    opening.box.torrentError = torrentFailureText(e);
+    // A torrent does not only arrive from the box that shows this message: a
+    // dropped `.torrent` reaches here with no dialog open, and a corrupt file
+    // would then fail in complete silence. Raising it is the same answer the
+    // start-screen rows give, and it is a no-op when the box is already up.
+    opening.linkOpen = true;
+  }
+}
+
+/// The ordinary "open a file" picker. Here rather than in the page because
+/// opening a file is what this module is for; the window dimming belongs to the
+/// shell and is borrowed through `withFileDialog`.
+export async function openFileDialog() {
+  await withFileDialog(pickAndLoadFiles);
+}
+
+/// Pick a `.torrent` from disk. The same dimming flag as the other pickers: the
+/// system dialog dims the window while it is up.
+export async function pickTorrentFile() {
+  const sel = await withFileDialog(() =>
+    pickPath({
+      multiple: false,
+      filters: [{ name: t('dialog.torrent'), extensions: ['torrent'] }],
+    }),
+  );
+  if (typeof sel === 'string') await openTorrent(sel);
+}
+
+export async function playTorrentFile(info: TorrentInfo, file: TorrentFile) {
+  opening.pick = null;
+  opening.linkOpen = false;
+  opening.box.failed = false;
+  opening.box.torrentError = null;
+  const left = departures;
+  await loadFiles([file.url]);
+  // Left while the file was being handed over: the `stop` has emptied the
+  // playlist, and a season queued behind nothing would start by itself at the
+  // next nudge.
+  if (left !== departures) return;
+  // After the load, like the folder queue: the entry being played is already in
+  // the playlist and the rest go around it.
+  await queueTorrent(torrentVideos(info), file.url);
+}
+
+/**
+ * Turning seeding off has to take effect now, not at the next magnet — a switch
+ * that reads "off" while pieces are still going out would be a lie about the one
+ * behavior here with legal weight attached. That costs the running torrent, so
+ * the popup says so rather than leaving a stream that silently died.
+ */
+export async function toggleSeeding() {
+  const stopped = await setSeeding(!torrentPrefs.seeding);
+  if (stopped) {
+    torrent.info = null;
+    torrent.status = null;
+    showOsd(t('torrent.seed_restarted'));
+  }
+}
+
+/**
+ * Same shape as seeding, and for a related reason: the port mapping is baked
+ * into the session too, so turning it off has to shut the port now rather than
+ * at the next magnet — a switch reading "off" over a router that is still
+ * forwarding would be a lie about the one setting here that changes the machine
+ * rather than the app.
+ *
+ * The status is re-read afterwards because the answer has certainly changed:
+ * with the session gone there is nothing mapped, and the row says so instead of
+ * standing on what the router replied a minute ago.
+ */
+export async function togglePortForward() {
+  const stopped = await setPortForward(!torrentPrefs.portForward);
+  if (stopped) {
+    torrent.info = null;
+    torrent.status = null;
+    showOsd(t('torrent.port_restarted'));
+  }
+  await refreshPortStatus();
+}
+
+/**
+ * Choose how peer connections are encrypted.
+ *
+ * The fourth session preference and the one worth having on: what it changes is
+ * the first bytes of every peer connection, which is what a network filtering
+ * on the protocol matches. Measured against the live Sintel swarm with the
+ * strictest setting — every peer that would not encrypt dropped — the magnet
+ * still resolved from the swarm in 840 ms and the file streamed at 2.2 MB/s
+ * from 24 peers, so `only` is a usable setting and not a way to be alone.
+ */
+export async function applyEncryption(mode: Encryption) {
+  const stopped = await setEncryption(mode);
+  if (stopped) {
+    torrent.info = null;
+    torrent.status = null;
+    showOsd(t('torrent.enc_restarted'));
+  }
+}
+
+/**
+ * Point the torrent traffic at a SOCKS5 proxy, or take it off one.
+ *
+ * The third preference baked into the session, so the same contract as the two
+ * above: a real change costs whatever was streaming, and saying so is better
+ * than a field that appears to apply and takes effect at the next magnet.
+ *
+ * **The address is not checked here beyond its shape**, and deliberately: a
+ * proxy that refuses connections, or one that is simply not running yet, is
+ * indistinguishable from a typo without trying it, and the place that tries it
+ * is the session — which refuses to start and reports what it could not parse.
+ * What a shape check does buy is the difference between a typo and a value that
+ * cannot work at all: `http://…` is a proxy address people paste out of habit,
+ * and librqbit takes SOCKS5 alone.
+ */
+export async function applyProxy(url: string) {
+  const stopped = await setProxy(url);
+  if (stopped) {
+    torrent.info = null;
+    torrent.status = null;
+    showOsd(t('torrent.proxy_restarted'));
+  }
+}
+
+
+/**
+ * Choose which interface the swarm traffic leaves by.
+ *
+ * The fifth preference baked into the session, on the proxy's terms: a real
+ * change costs what was streaming, and saying so beats a setting that appears
+ * to apply and takes effect at the next magnet. The one direction where that is
+ * not a formality is back *into* the VPN — pieces still arriving past it after
+ * the viewer chose otherwise would be a lie about the thing a VPN is on for.
+ */
+export async function applyRoute(route: Route) {
+  const stopped = await setRoute(route);
+  if (stopped) {
+    torrent.info = null;
+    torrent.status = null;
+    showOsd(t('torrent.route_restarted'));
+  }
+}
+
+export async function clearTorrentCache() {
+  // Reported rather than swallowed, like the two per-row deletions: this walks
+  // every root and can fail per folder, and "Freed 0 B" over a cache that is
+  // still full is the same lie in a different place.
+  try {
+    const freed = await withDeadline(invoke<number>('torrent_clear_cache'));
+    showOsd(t('torrent.cache_cleared', { size: fmtSize(freed) }));
+  } catch (e) {
+    reportDeleteFailure(e);
+  }
+}
+
+/**
+ * Where torrent files are written, and the two ways to change it.
+ *
+ * **Nothing is moved by a change**, which is what makes this safe to offer as a
+ * plain setting: the previous root is remembered on the Rust side, so a season
+ * downloaded last week is still listed, still resumable and still deletable
+ * from wherever it already is. Only new torrents follow the new choice.
+ *
+ * The folder is created when it is chosen rather than at the first torrent —
+ * a root that cannot be written to should fail while somebody is looking at
+ * the setting, not an hour later in the middle of opening a film.
+ */
+export async function pickTorrentDir(): Promise<boolean> {
+  // The same dimming flag as every other picker: the system dialog dims the
+  // window while it is up, and the chrome has to know.
+  const dir = await withFileDialog(() =>
+    pickPath({ directory: true, multiple: false }).catch(() => null),
+  );
+  if (typeof dir !== 'string') return false;
+  try {
+    await invoke('torrent_set_dir', { path: dir });
+    return true;
+  } catch (e) {
+    showOsd(t('torrent.dir_failed', { detail: String(e) }));
+    return false;
+  }
+}
+
+export async function resetTorrentDir(): Promise<boolean> {
+  await invoke('torrent_set_dir', { path: null }).catch(() => {});
+  return true;
+}
+
+/**
+ * Open something from the watch history — and **give it back its queue**.
+ *
+ * A local file is its own address and opens directly, and gets the folder queue
+ * for free (`loadFiles` builds it through the `filesOpened` hook). A **torrent
+ * entry is neither**: what the record holds is a loopback URL whose port died
+ * with the session that issued it, so after a restart every torrent card led to
+ * a refused connection — it has to be re-derived from the remembered magnet,
+ * which is what `resolveTorrentFile` does and the reason torrents are remembered
+ * at all. And the resolver used to hand back one URL with the rest of the season
+ * dropped, so an episode opened from the history had no next episode while the
+ * same episode opened from the torrent list did: one file, two behaviors,
+ * invisible from outside.
+ */
+export async function openRecent(item: RecentItem) {
+  if (!item.id.startsWith('torrent:')) {
+    await loadFiles([item.path]);
+    return;
+  }
+  await openTorrentById(item.id);
+}
+
+/// Re-derive a torrent episode from its id and play it with its season queued.
+/// False when there is nothing to open — the magnet was never recorded or the
+/// swarm is gone — and the viewer has already been told so.
+async function openTorrentById(id: string): Promise<boolean> {
+  opening.busy = true;
+  const run = opens.begin();
+  const resolved = await resolveTorrentFile(id);
+  if (overtaken(run)) return false;
+  if (!resolved) {
+    opening.busy = false;
+    showOsd(t('start.torrent_lost'));
+    return false;
+  }
+  await loadFiles([resolved.url]);
+  await queueTorrent(torrentVideos(resolved.info), resolved.url);
+  return true;
+}
+
+/**
+ * Reopen what was playing before an update restart.
+ *
+ * The snapshot keeps a path, and for a torrent that path is a loopback URL
+ * whose port died with the old process — the session is lazy, so after the
+ * restart nothing listens there at all. Handed to mpv as it was, it sat on
+ * "opening the link" until the connection failed, the start screen came back,
+ * and the stream-failed dialog landed on top of it; the same episode opened
+ * fine from the history a moment later, because that path re-resolves. This is
+ * that path. False when nothing could be opened.
+ */
+export async function openResumeSnapshot(path: string): Promise<boolean> {
+  const ref = parseTorrentUrl(path);
+  if (!ref) {
+    await loadFiles([path]);
+    return true;
+  }
+  return openTorrentById(torrentId(ref.infoHash, ref.index));
+}
+
+// ---- The torrent list on the start screen ---------------------------------
+
+export async function refreshTorrents() {
+  opening.rows = await listTorrents();
+  // Behind the list rather than before it: the rows are the screen, and an
+  // update line arriving a moment later is the lesser fault.
+  void checkFeedUpdates(opening.rows);
+}
+
+/**
+ * Reopen a torrent from the start screen.
+ *
+ * **Goes straight to where the viewer left off**, which is what the row says it
+ * will do — it prints "продолжить: S01E03 · 23:14" — and what it used to ignore,
+ * dropping the same file picker a freshly pasted magnet gets. Landing on a list
+ * of nine identical file names to hunt for the episode you were already watching
+ * is the player forgetting something it plainly knows.
+ *
+ * The picker is still what happens when there is nothing to continue: a torrent
+ * opened but never watched, or one whose positions have aged out.
+ *
+ * What it opens with is `row.magnet`, which is the remembered one where there is
+ * one and a magnet built from the folder's own info hash where there is not —
+ * see `listTorrents`. Opening it then records it, so a row that arrived on this
+ * disk without our knowing it names itself from the second time onwards.
+ */
+export async function openRememberedTorrent(row: TorrentRow) {
+  if (!row.magnet || opening.rowOpening) return;
+  const magnet = row.magnet;
+  const resume = torrentResume(row);
+  opening.rowOpening = row.folder;
+  opening.box.torrentError = null;
+  const run = opens.begin();
+  try {
+    const info = await addTorrent(magnet);
+    if (overtaken(run)) return;
+    rememberTorrent(info, magnet);
+    const videos = torrentVideos(info);
+    if (!videos.length) {
+      opening.box.torrentError = t('torrent.no_video');
+      opening.linkOpen = true;
+      return;
+    }
+    const wanted =
+      (resume && videos.find((f) => f.index === resume.index)) ??
+      (videos.length === 1 ? videos[0] : null);
+    if (wanted) {
+      await playTorrentFile(info, wanted);
+      return;
+    }
+    opening.pick = info;
+  } catch (e) {
+    if (run.stale) return;
+    opening.box.torrentError = torrentFailureText(e);
+    opening.linkOpen = true;
+  } finally {
+    // A newer open owns the row's spinner now.
+    if (!run.stale) opening.rowOpening = null;
+  }
+}
+
+/**
+ * Delete the episodes of a torrent that have been watched to the end, and keep
+ * the rest.
+ *
+ * **The one thing that makes this offerable is that the list exists at all.** A
+ * finished video has its position record *deleted* — that is what takes it out
+ * of "continue watching" — so "which ones have I seen" cannot be answered from
+ * the history, and the torrent store keeps its own record for exactly this.
+ *
+ * The torrent itself stays: its folder, its cached metadata and its magnet are
+ * all still there, so it reopens for nothing and the episodes that were kept
+ * play immediately. What it costs is one re-check on that next open, because
+ * removing files behind librqbit's back invalidates its resume data — see
+ * `forget_files`.
+ */
+export async function deleteWatchedFiles(row: TorrentRow) {
+  if (torrentIsPlaying(row) || opening.rowBusy || !row.info_hash) return;
+  const names = [...watchedFiles(row.info_hash)];
+  if (!names.length) return;
+  opening.rowBusy = row.folder;
+  try {
+    const freed = await withDeadline(
+      invoke<number>('torrent_forget_files', { path: row.path, names }),
+    );
+    showOsd(t('torrent.cache_cleared', { size: fmtSize(freed) }));
+  } catch (e) {
+    reportDeleteFailure(e);
+  } finally {
+    // **In `finally`, so a failure re-reads the disk too.** A deletion that
+    // stopped halfway has changed what is there, and the row is the only place
+    // that says so.
+    await refreshTorrents();
+    opening.rowBusy = null;
+  }
+}
+
+/// Say which deletion failed and why, rather than reporting that nothing was
+/// freed — see `forgetTorrent` for how that message came to be the same one
+/// success shows. The console line is for the case the sentence cannot carry:
+/// Rust's own error text is English and often a path.
+function reportDeleteFailure(e: unknown) {
+  console.error('[torrent] delete failed:', e);
+  const reason = e === DELETE_STUCK ? t('torrent.delete_stuck') : String(e);
+  showOsd(t('torrent.delete_failed', { reason }));
+}
+
+/// Delete a torrent completely — data, history, magnet. One action, because a
+/// half-deleted torrent is the confusing state: files gone but the season still
+/// listed, or the reverse.
+export async function deleteTorrent(row: TorrentRow) {
+  if (torrentIsPlaying(row) || opening.rowBusy) return;
+  opening.rowBusy = row.folder;
+  try {
+    const freed = await forgetTorrent(row);
+    if (row.info_hash) {
+      purgeTorrentHistory(row.info_hash);
+      if (row.known) forgetLink(row.known.magnet);
+    }
+    opening.box.recent = recentLinks();
+    showOsd(t('torrent.cache_cleared', { size: fmtSize(freed) }));
+  } catch (e) {
+    // The history is deliberately kept: the data is still there, so the
+    // positions and the magnet are still about something.
+    reportDeleteFailure(e);
+  } finally {
+    await refreshTorrents();
+    opening.rowBusy = null;
+  }
+}
+
+// ---- Replacing a torrent with its re-upload -------------------------------
+//
+// BitTorrent cannot add a file to a torrent, so an uploader who adds an episode
+// publishes a different one. The player cannot discover that — the new magnet
+// lives on a tracker page we have no access to — but once the viewer brings it,
+// everything else is ours to do: keep the episodes already on disk, and keep the
+// watch history that is keyed by the old info hash.
+
+/// The dialog focuses its own field once it is on screen — see the note in
+/// TorrentUpdateDialog.svelte for why that is not done from here.
+export function openUpdateDialog(known: RememberedTorrent, magnet = '', feedItem: string | null = null) {
+  opening.updateFor = known;
+  opening.updateValue = magnet;
+  opening.updateError = null;
+  opening.updateNote = null;
+  opening.updateSuggested = !!magnet;
+  opening.updateFeedItem = feedItem;
+}
+
+export async function submitUpdate() {
+  const magnet = opening.updateValue.trim();
+  const known = opening.updateFor;
+  if (!magnet || !known || opening.updateBusy) return;
+  if (isFeedLink(magnet) && !isTorrentLink(magnet)) {
+    await attachFeedInUpdate(known, magnet);
+    return;
+  }
+  if (!isTorrentLink(magnet)) {
+    opening.updateError = t('torrent.update_not_magnet');
+    return;
+  }
+  opening.updateBusy = true;
+  opening.updateError = null;
+  try {
+    const { info, matched, added } = await updateTorrent(known, magnet);
+    opening.updateFor = null;
+    opening.box.recent = recentLinks();
+    await refreshTorrents();
+    showOsd(t('torrent.updated', { matched, added }));
+    // Straight into the picker: the viewer came here for the new episode, and
+    // making them click the row again to reach it would be the second half of
+    // the same errand.
+    const videos = torrentVideos(info);
+    if (videos.length) opening.pick = info;
+  } catch (e) {
+    const reason = String(e);
+    opening.updateError = reason.includes('same_torrent')
+      ? t('torrent.update_same')
+      : reason.includes('no_hash')
+        ? t('torrent.update_not_magnet')
+        : t('torrent.failed', { reason });
+  } finally {
+    opening.updateBusy = false;
+  }
+}
+
+// ---- RSS feeds ------------------------------------------------------------
+//
+// A feed is a link to a *release* rather than to one torrent: the same URL
+// names this week's upload and next week's. So it is both a way in — pasted
+// where a magnet goes — and the one thing that lets the player notice a
+// re-upload without the viewer fetching the new magnet by hand.
+//
+// **Read on the viewer's own gestures and never on a timer**: when it is
+// pasted, when the start screen lists its torrent, and when the update button
+// is pressed. A feed polled in the background is a resident client, which is
+// the line this player draws. And an update found is only ever *offered* —
+// replacing a season's torrent re-checks everything on disk.
+
+/// Turn a feed error into a sentence for the link box.
+function feedFailureText(e: unknown): string {
+  const reason = String(e);
+  if (reason.includes('not_torrent')) return t('feed.not_torrent');
+  if (reason.includes('feed_item_empty')) return t('feed.empty');
+  if (/http_\d+/.test(reason)) {
+    return t('feed.http', { status: reason.replace(/.*http_(\d+).*/, '$1') });
+  }
+  return t('feed.failed', { reason });
+}
+
+export async function openFeed(url: string) {
+  if (opening.feedBusy) return;
+  opening.feedBusy = true;
+  opening.box.torrentError = null;
+  opening.box.failed = false;
+  let feed: Feed;
+  try {
+    feed = await readFeed(url);
+  } catch (e) {
+    opening.feedBusy = false;
+    // Not a feed after all: an ordinary link that happened to look like one.
+    if (String(e).includes('not_feed')) {
+      openOrdinaryLink(url);
+      return;
+    }
+    opening.box.torrentError = feedFailureText(e);
+    opening.linkOpen = true;
+    return;
+  }
+  opening.feedBusy = false;
+  const items = sortFeedItems(feed.items.filter(isOpenable));
+  if (!items.length) {
+    opening.box.torrentError = t('feed.empty');
+    opening.linkOpen = true;
+    return;
+  }
+  if (items.length === 1) {
+    await pickFeedItem(url, items[0]);
+    return;
+  }
+  // The box has done its job; the picker is the next question, and leaving the
+  // box under it would bring it back when the picker is dismissed.
+  opening.linkOpen = false;
+  opening.feedPick = { url, feed, items };
+}
+
+/**
+ * Open one item of a feed as a torrent, remembering the feed with it.
+ *
+ * Before anything is added it asks whether this is the **next upload of a
+ * season already on disk** — the same question `submitLink` asks a pasted
+ * magnet, answered better here: a torrent opened from this very feed with the
+ * same release stem is the one being replaced, not a resemblance of names.
+ */
+export async function pickFeedItem(url: string, item: FeedItem) {
+  opening.feedPick = null;
+  opening.feedBusy = true;
+  opening.box.torrentError = null;
+  let resolved: { magnet: string; infoHash: string };
+  try {
+    resolved = await resolveFeedItem(item);
+  } catch (e) {
+    opening.box.torrentError = feedFailureText(e);
+    opening.linkOpen = true;
+    return;
+  } finally {
+    opening.feedBusy = false;
+  }
+  const { magnet, infoHash } = resolved;
+  if (infoHash) expectFeed(infoHash, { url, item: item.title });
+
+  const predecessor = rememberedTorrents().find(
+    (known) =>
+      known.feed?.url === url &&
+      known.infoHash !== infoHash.toLowerCase() &&
+      findFeedUpdate([item], known.infoHash, known.feed.item) === item,
+  );
+  // The name resemblance is still asked for a season that arrived some other
+  // way — but never about a torrent from this same feed, where the stem has
+  // already given the exact answer and a resemblance would only be the other
+  // codec beside it.
+  const lookalike = predecessor ? null : findSupersededTorrent(magnet);
+  const superseded = predecessor ?? (lookalike?.feed?.url === url ? null : lookalike);
+  if (superseded) {
+    opening.linkOpen = false;
+    openUpdateDialog(superseded, magnet, predecessor ? item.title : null);
+    return;
+  }
+  await openTorrent(magnet);
+}
+
+/**
+ * Ask the feeds of the torrents on the start screen whether anything newer is
+ * out. One request per feed, not per torrent, and at most once per
+ * `FEED_RECHECK_MS`; sequential, because it runs behind a screen the viewer is
+ * already using and nothing about it is urgent.
+ */
+const feedReadAt = new Map<string, number>();
+let feedSweep = false;
+
+export async function checkFeedUpdates(rows: TorrentRow[]) {
+  if (feedSweep) return;
+  const byFeed = new Map<string, RememberedTorrent[]>();
+  for (const row of rows) {
+    const feed = row.known?.feed;
+    if (!feed) continue;
+    if (Date.now() - (feedReadAt.get(feed.url) ?? 0) < FEED_RECHECK_MS) continue;
+    byFeed.set(feed.url, [...(byFeed.get(feed.url) ?? []), row.known!]);
+  }
+  if (!byFeed.size) return;
+  feedSweep = true;
+  try {
+    for (const [url, knowns] of byFeed) {
+      feedReadAt.set(url, Date.now());
+      const feed = await readFeed(url).catch((e) => {
+        // A feed that is down today says nothing about the torrent; the row
+        // simply offers no update, and the button can still be pressed.
+        console.warn('[feed] check failed:', url, e);
+        return null;
+      });
+      if (feed) noteFeedUpdates(feed, knowns);
+    }
+  } finally {
+    feedSweep = false;
+  }
+}
+
+function noteFeedUpdates(feed: Feed, knowns: RememberedTorrent[]) {
+  for (const known of knowns) {
+    if (!known.feed) continue;
+    const found = findFeedUpdate(feed.items, known.infoHash, known.feed.item);
+    if (found) torrent.feedUpdates[known.infoHash] = found;
+    else delete torrent.feedUpdates[known.infoHash];
+  }
+}
+
+/**
+ * The update button on a torrent that came from a feed: read the feed now,
+ * and offer what it holds.
+ *
+ * Every outcome other than "found one" falls through to the manual dialog — it is the honest answer when the feed has nothing
+ * newer, and it is where a different link can still be pasted.
+ */
+export async function checkFeedUpdate(known: RememberedTorrent) {
+  const origin = known.feed;
+  if (!origin || opening.feedChecking) return;
+  opening.feedChecking = known.infoHash;
+  try {
+    const feed = await readFeed(origin.url);
+    feedReadAt.set(origin.url, Date.now());
+    noteFeedUpdates(feed, [known]);
+    const found = torrent.feedUpdates[known.infoHash];
+    if (found) {
+      const { magnet, infoHash } = await resolveFeedItem(found);
+      if (infoHash) expectFeed(infoHash, { url: origin.url, item: found.title });
+      openUpdateDialog(known, magnet, found.title);
+      return;
+    }
+    showOsd(t('feed.update_none'));
+  } catch (e) {
+    console.warn('[feed] update check failed:', e);
+    showOsd(t('feed.check_failed'));
+  } finally {
+    opening.feedChecking = null;
+  }
+  openUpdateDialog(known);
+}
+
+/**
+ * A feed pasted into the update dialog: attach it, and look for the upload.
+ *
+ * This is how a season that arrived by magnet becomes one the player can watch
+ * for. The item the torrent came from is found **by hash** where the feed names
+ * one, which is exact; otherwise the feed cannot be tied to this torrent with
+ * any confidence and the dialog says so rather than attaching a guess.
+ *
+ * Nothing is applied: a found upload is put in the field as a magnet, and the
+ * viewer presses the button again — the same confirmation every other path to
+ * an update asks for.
+ */
+async function attachFeedInUpdate(known: RememberedTorrent, url: string) {
+  opening.updateBusy = true;
+  opening.updateError = null;
+  opening.updateNote = null;
+  try {
+    const feed = await readFeed(url);
+    const own = itemForHash(feed.items, known.infoHash);
+    const base = own?.title ?? known.feed?.item;
+    if (!base) {
+      opening.updateError = t('feed.not_this_torrent');
+      return;
+    }
+    setTorrentFeed(known.infoHash, { url, item: base });
+    const updated = { ...known, feed: { url, item: base } };
+    opening.updateFor = updated;
+    const found = findFeedUpdate(feed.items, known.infoHash, base);
+    feedReadAt.set(url, Date.now());
+    if (!found) {
+      delete torrent.feedUpdates[known.infoHash];
+      opening.updateValue = '';
+      opening.updateNote = t('feed.attached');
+      void refreshTorrents();
+      return;
+    }
+    torrent.feedUpdates[known.infoHash] = found;
+    const { magnet, infoHash } = await resolveFeedItem(found);
+    if (infoHash) expectFeed(infoHash, { url, item: found.title });
+    opening.updateValue = magnet;
+    opening.updateSuggested = true;
+    opening.updateFeedItem = found.title;
+    void refreshTorrents();
+  } catch (e) {
+    opening.updateError = String(e).includes('not_feed')
+      ? t('feed.not_feed')
+      : feedFailureText(e);
+  } finally {
+    opening.updateBusy = false;
+  }
+}
