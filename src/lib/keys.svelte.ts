@@ -16,7 +16,9 @@
  *     delay nudges deliberately do repeat, which is why this is per action and
  *     not a blanket rule.
  *   - `quiet` — the action raises a popup of its own, so lighting up the whole
- *     OSC on top of it is noise.
+ *     OSC on top of it is noise. Pause is quiet for a different reason: the
+ *     picture stopping or moving is its own feedback, and a pause is usually
+ *     taken to look at the frame the bars would cover.
  *   - the default chord, which differs per platform for two families: chapter
  *     navigation (plain Ctrl+arrow is Mission Control on macOS and never
  *     reaches the webview) and the two Ctrl/Cmd actions.
@@ -124,7 +126,7 @@ export interface ActionDef {
  */
 export const ACTIONS: ActionDef[] = [
   // Playback
-  { id: 'pause', group: 'playback', def: ['Space', 'KeyK'], noRepeat: true },
+  { id: 'pause', group: 'playback', def: ['Space', 'KeyK'], noRepeat: true, quiet: true },
   { id: 'speed_down', group: 'playback', def: ['BracketLeft'] },
   { id: 'speed_up', group: 'playback', def: ['BracketRight'] },
   { id: 'loop', group: 'playback', def: ['shift+KeyL'], noRepeat: true, quiet: true },
